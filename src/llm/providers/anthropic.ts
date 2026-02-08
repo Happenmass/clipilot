@@ -104,9 +104,12 @@ export class AnthropicProvider implements LLMProvider {
 	): any {
 		const params: any = {
 			model: this.model,
-			max_tokens: opts?.maxTokens ?? 4096,
 			messages: chatMessages,
 		};
+
+		if (opts?.maxTokens) {
+			params.max_tokens = opts.maxTokens;
+		}
 
 		if (systemPrompt) {
 			params.system = systemPrompt;

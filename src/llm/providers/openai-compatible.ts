@@ -176,7 +176,7 @@ export class OpenAICompatibleProvider implements LLMProvider {
 		const body: any = {
 			model: this.model,
 			stream,
-			max_tokens: opts?.maxTokens ?? 4096,
+			...(opts?.maxTokens ? { max_tokens: opts.maxTokens } : {}),
 		};
 
 		if (stream) {

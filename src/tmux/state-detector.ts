@@ -212,7 +212,6 @@ export class StateDetector {
 				],
 				{
 					systemPrompt: this.promptLoader.resolve("state-analyzer"),
-					maxTokens: 4096,
 					temperature: 0,
 				},
 			);
@@ -251,7 +250,6 @@ export class StateDetector {
 				[{ role: "user", content: contextParts.join("\n") }],
 				{
 					systemPrompt: this.promptLoader.resolve("error-analyzer"),
-					maxTokens: 1024,
 					temperature: 0,
 				},
 			);

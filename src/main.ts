@@ -295,7 +295,6 @@ async function main(): Promise<void> {
 			],
 			{
 				systemPrompt: promptLoader.resolve("session-summarizer"),
-				maxTokens: 1024,
 				temperature: 0.3,
 			},
 		);

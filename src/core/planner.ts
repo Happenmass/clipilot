@@ -45,7 +45,6 @@ export class Planner {
 			[{ role: "user", content: contextParts.join("\n") }],
 			{
 				systemPrompt: this.promptLoader.resolve("planner"),
-				maxTokens: 4096,
 				temperature: 0.2,
 			},
 		);
@@ -96,7 +95,6 @@ export class Planner {
 			[{ role: "user", content: contextParts.join("\n") }],
 			{
 				systemPrompt: this.promptLoader.resolve("planner"),
-				maxTokens: 4096,
 				temperature: 0.3,
 			},
 		);
@@ -139,7 +137,6 @@ export class Planner {
 
 		const response = await this.llmClient.complete([{ role: "user", content: contextParts.join("\n") }], {
 			systemPrompt: this.promptLoader.resolve("prompt-generator"),
-			maxTokens: 2048,
 			temperature: 0.3,
 		});
 
