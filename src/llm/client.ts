@@ -113,7 +113,8 @@ function extractJson(content: string): string {
 	}
 
 	// Strategy 2: Markdown code blocks with variable backtick count (3+)
-	const codeBlockMatch = trimmed.match(/`{3,}(?:json)?\s*\n([\s\S]*?)\n\s*`{3,}/);
+	// Also handles truncated blocks (missing closing ```)
+	const codeBlockMatch = trimmed.match(/`{3,}(?:json)?\s*\n([\s\S]*?)(?:\n\s*`{3,}|$)/);
 	if (codeBlockMatch) {
 		return codeBlockMatch[1].trim();
 	}

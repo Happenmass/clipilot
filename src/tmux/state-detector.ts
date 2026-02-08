@@ -46,6 +46,7 @@ export class StateDetector {
 	private lastContent = "";
 	private callbacks: StateChangeCallback[] = [];
 	private cooldownUntil = 0;
+	private analyzing = false;
 
 	constructor(bridge: TmuxBridge, llmClient: LLMClient, config: StateDetectorConfig, promptLoader: PromptLoader) {
 		this.bridge = bridge;
@@ -129,14 +130,18 @@ export class StateDetector {
 			// Content hasn't changed — check if stable long enough
 			const stableDuration = Date.now() - this.lastChangeTime;
 
-			if (stableDuration >= this.config.stableThresholdMs && !this.isInCooldown()) {
+			if (stableDuration >= this.config.stableThresholdMs && !this.isInCooldown() && !this.analyzing) {
 				// Stable for too long and not in cooldown — trigger Layer 2
+				this.analyzing = true;
 				logger.info("state-detector", `Content stable for ${stableDuration}ms, triggering Layer 2 analysis`);
-				const analysis = await this.analyzeState(content, taskContext);
-				this.emit(analysis, content);
-
-				// Reset timer to avoid re-triggering immediately
-				this.lastChangeTime = Date.now();
+				try {
+					const analysis = await this.analyzeState(content, taskContext);
+					this.emit(analysis, content);
+				} finally {
+					this.analyzing = false;
+					// Reset timer to avoid re-triggering immediately
+					this.lastChangeTime = Date.now();
+				}
 			}
 		} catch (err: any) {
 			logger.error("state-detector", `Capture error: ${err.message}`);
@@ -207,7 +212,7 @@ export class StateDetector {
 				],
 				{
 					systemPrompt: this.promptLoader.resolve("state-analyzer"),
-					maxTokens: 512,
+					maxTokens: 4096,
 					temperature: 0,
 				},
 			);
