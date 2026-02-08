@@ -1,7 +1,7 @@
 import { readFile } from "node:fs/promises";
 import { homedir } from "node:os";
-import { join } from "node:path";
-import { DEFAULT_PROMPTS } from "./prompts.js";
+import { dirname, join } from "node:path";
+import { fileURLToPath } from "node:url";
 
 export type PromptName = "planner" | "state-analyzer" | "error-analyzer" | "prompt-generator" | "session-summarizer";
 
@@ -13,15 +13,22 @@ const PROMPT_FILE_MAP: Record<PromptName, string> = {
 	"session-summarizer": "session-summarizer.md",
 };
 
+const __filename = fileURLToPath(import.meta.url);
+const __dirname = dirname(__filename);
+const DEFAULT_BUILTIN_DIR = join(__dirname, "..", "..", "prompts");
+
 export class PromptLoader {
 	private prompts: Map<string, string> = new Map();
 	private globalContext: Record<string, string> = {};
+	private builtinDir: string;
+
+	constructor(builtinDir?: string) {
+		this.builtinDir = builtinDir ?? DEFAULT_BUILTIN_DIR;
+	}
 
 	async load(projectDir?: string): Promise<void> {
-		// Layer 1: Built-in defaults
-		for (const [name, content] of Object.entries(DEFAULT_PROMPTS)) {
-			this.prompts.set(name, content);
-		}
+		// Layer 1: Built-in defaults from package's prompts/ directory
+		await this.loadFromDir(this.builtinDir);
 
 		// Layer 2: User-level overrides (~/.clipilot/prompts/*.md)
 		const userPromptsDir = join(homedir(), ".clipilot", "prompts");

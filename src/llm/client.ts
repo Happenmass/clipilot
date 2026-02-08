@@ -1,15 +1,15 @@
 import { logger } from "../utils/logger.js";
+import { AnthropicProvider } from "./providers/anthropic.js";
+import { OpenAICompatibleProvider } from "./providers/openai-compatible.js";
+import { resolveProvider } from "./providers/registry.js";
 import type {
+	CompletionOptions,
 	LLMClientOptions,
 	LLMMessage,
+	LLMProvider,
 	LLMResponse,
 	LLMStreamEvent,
-	LLMProvider,
-	CompletionOptions,
 } from "./types.js";
-import { resolveProvider } from "./providers/registry.js";
-import { OpenAICompatibleProvider } from "./providers/openai-compatible.js";
-import { AnthropicProvider } from "./providers/anthropic.js";
 
 /**
  * Unified LLM client that dispatches to the correct provider based on protocol.
@@ -74,10 +74,7 @@ export class LLMClient {
 	async completeJson<T = any>(messages: LLMMessage[], opts?: CompletionOptions): Promise<T> {
 		const response = await this.complete(messages, opts);
 		const content = response.content.trim();
-
-		// Extract JSON from markdown code blocks if present
-		const jsonMatch = content.match(/```(?:json)?\s*\n?([\s\S]*?)\n?\s*```/);
-		const jsonStr = jsonMatch ? jsonMatch[1].trim() : content;
+		const jsonStr = extractJson(content);
 
 		try {
 			return JSON.parse(jsonStr);
@@ -98,4 +95,72 @@ export class LLMClient {
 	getProtocol(): string {
 		return this.provider.protocol;
 	}
+}
+
+/**
+ * Extract JSON from LLM response text.
+ * Tries multiple strategies to handle different LLM output formats:
+ * 1. Direct JSON parse (already clean)
+ * 2. Markdown code block extraction (```json ... ```, ````json ... ````, etc.)
+ * 3. First/last bracket matching ({ ... } or [ ... ])
+ */
+function extractJson(content: string): string {
+	const trimmed = content.trim();
+
+	// Strategy 1: Already valid JSON
+	if (trimmed.startsWith("{") || trimmed.startsWith("[")) {
+		return trimmed;
+	}
+
+	// Strategy 2: Markdown code blocks with variable backtick count (3+)
+	const codeBlockMatch = trimmed.match(/`{3,}(?:json)?\s*\n([\s\S]*?)\n\s*`{3,}/);
+	if (codeBlockMatch) {
+		return codeBlockMatch[1].trim();
+	}
+
+	// Strategy 3: Find outermost JSON structure by bracket matching
+	const firstBrace = trimmed.indexOf("{");
+	const firstBracket = trimmed.indexOf("[");
+	let start = -1;
+	let openChar: string;
+	let closeChar: string;
+
+	if (firstBrace === -1 && firstBracket === -1) {
+		return trimmed;
+	}
+	if (firstBrace === -1) {
+		start = firstBracket;
+		openChar = "[";
+		closeChar = "]";
+	} else if (firstBracket === -1) {
+		start = firstBrace;
+		openChar = "{";
+		closeChar = "}";
+	} else if (firstBracket < firstBrace) {
+		start = firstBracket;
+		openChar = "[";
+		closeChar = "]";
+	} else {
+		start = firstBrace;
+		openChar = "{";
+		closeChar = "}";
+	}
+
+	// Find matching close bracket from the end
+	let depth = 0;
+	let end = -1;
+	for (let i = start; i < trimmed.length; i++) {
+		if (trimmed[i] === openChar) depth++;
+		else if (trimmed[i] === closeChar) depth--;
+		if (depth === 0) {
+			end = i;
+			break;
+		}
+	}
+
+	if (end !== -1) {
+		return trimmed.slice(start, end + 1);
+	}
+
+	return trimmed;
 }
