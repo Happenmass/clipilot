@@ -246,6 +246,8 @@ export class Scheduler extends EventEmitter<SchedulerEvents> {
 		return new Promise((resolve) => {
 			const taskContext = `${task.title}: ${task.description}`;
 			let resolved = false;
+			let waitingInputRetries = 0;
+			const maxWaitingInputRetries = 3;
 
 			const unsubscribe = this.stateDetector.onStateChange(async (analysis, paneContent) => {
 				if (resolved) return;
@@ -280,12 +282,42 @@ export class Scheduler extends EventEmitter<SchedulerEvents> {
 
 					case "waiting_input": {
 						if (this.options.autonomyLevel === "high" || this.options.autonomyLevel === "full") {
-							// Auto-respond
-							if (analysis.suggestedAction?.type === "send_keys" && analysis.suggestedAction.value) {
-								await adapter.sendResponse(this.bridge, paneTarget, analysis.suggestedAction.value);
+							// Check retry limit
+							waitingInputRetries++;
+							if (waitingInputRetries > maxWaitingInputRetries) {
+								logger.warn("scheduler", `waiting_input retry limit reached (${maxWaitingInputRetries})`);
+								this.emit("need_human", task, `Auto-response failed after ${maxWaitingInputRetries} attempts`);
+								break;
+							}
+
+							let actionValue = analysis.suggestedAction?.value;
+
+							// If no value from Layer 1.5, trigger Layer 2 LLM analysis
+							if (!actionValue) {
+								logger.info(
+									"scheduler",
+									"No suggestedAction value, triggering Layer 2 for interaction analysis",
+								);
+								try {
+									const llmResult = await this.stateDetector.analyzeState(paneContent, taskContext);
+									if (llmResult.suggestedAction?.type === "escalate") {
+										this.emit("need_human", task, llmResult.detail);
+										break;
+									}
+									actionValue = llmResult.suggestedAction?.value;
+								} catch (err: any) {
+									logger.error("scheduler", `Layer 2 analysis failed: ${err.message}`);
+									this.emit("need_human", task, `Interaction analysis failed: ${err.message}`);
+									break;
+								}
+							}
+
+							if (actionValue) {
+								await adapter.sendResponse(this.bridge, paneTarget, actionValue);
+								this.stateDetector.setCooldown(3000);
 							} else {
-								// Default: confirm
-								await adapter.sendResponse(this.bridge, paneTarget, "y");
+								// LLM returned no actionable value
+								this.emit("need_human", task, analysis.detail);
 							}
 						} else {
 							// Request human intervention

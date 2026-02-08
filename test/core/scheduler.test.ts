@@ -217,4 +217,106 @@ describe("Scheduler", () => {
 		await scheduler.start();
 		expect(graph.getTask("1")?.status).toBe("completed");
 	});
+
+	it("should trigger Layer 2 analysis when waiting_input has no value", async () => {
+		const graph = new TaskGraph();
+		graph.addTask(makeTask({ id: "1", title: "Task 1" }));
+
+		// Layer 2 analyzeState returns a value for the interaction
+		stateDetector.analyzeState = vi.fn().mockResolvedValue({
+			status: "waiting_input",
+			confidence: 0.9,
+			detail: "Menu selection needed",
+			suggestedAction: { type: "send_keys", value: "Enter" },
+		});
+
+		// startMonitoring emits waiting_input WITHOUT a value (Layer 1.5 style)
+		// then on next poll emits completed
+		let monitorCallCount = 0;
+		stateDetector.startMonitoring = vi.fn((_pane: string, _ctx: string) => {
+			monitorCallCount++;
+			for (const cb of stateDetector._callbacks) {
+				if (monitorCallCount === 1) {
+					// First: waiting_input with no value
+					cb(
+						{ status: "waiting_input", confidence: 0.6, detail: "Agent waiting", suggestedAction: { type: "send_keys" } },
+						"Do you want to proceed?\n❯ 1. Yes\n  2. No",
+					);
+					// Then immediately complete (simulating the response worked)
+					cb({ status: "completed", confidence: 1, detail: "done" }, ">");
+				} else {
+					cb({ status: "completed", confidence: 1, detail: "done" }, ">");
+				}
+			}
+		});
+
+		const agents = new Map([["mock", adapter]]);
+		const scheduler = new Scheduler(
+			graph,
+			bridge,
+			stateDetector as any,
+			planner,
+			agents,
+			{ maxParallel: 1, autonomyLevel: "high", defaultAgent: "mock", goal: "test goal" },
+		);
+
+		await scheduler.start();
+
+		// analyzeState should have been called (Layer 2 triggered)
+		expect(stateDetector.analyzeState).toHaveBeenCalled();
+		// sendResponse should have been called with the LLM-provided value
+		expect(adapter.sendResponse).toHaveBeenCalledWith(bridge, "mock-session:0.0", "Enter");
+		// cooldown should be set after sendResponse
+		expect(stateDetector.setCooldown).toHaveBeenCalledWith(3000);
+	});
+
+	it("should escalate after 3 failed waiting_input retries", async () => {
+		const graph = new TaskGraph();
+		graph.addTask(makeTask({ id: "1", title: "Task 1", maxAttempts: 1 }));
+
+		// Layer 2 always returns a value but the interaction never resolves
+		stateDetector.analyzeState = vi.fn().mockResolvedValue({
+			status: "waiting_input",
+			confidence: 0.8,
+			detail: "Menu still showing",
+			suggestedAction: { type: "send_keys", value: "Enter" },
+		});
+
+		// Emit waiting_input 4 times (3 retries + 1 that triggers escalation),
+		// then complete to avoid hanging
+		stateDetector.startMonitoring = vi.fn((_pane: string, _ctx: string) => {
+			for (const cb of stateDetector._callbacks) {
+				// 4 waiting_input events: first 3 get auto-responded, 4th triggers escalation
+				for (let i = 0; i < 4; i++) {
+					cb(
+						{ status: "waiting_input", confidence: 0.6, detail: "Still waiting", suggestedAction: { type: "send_keys" } },
+						"Menu prompt",
+					);
+				}
+				// Finally complete to resolve the promise
+				cb({ status: "completed", confidence: 1, detail: "done" }, ">");
+			}
+		});
+
+		const needHumanSpy = vi.fn();
+		const agents = new Map([["mock", adapter]]);
+		const scheduler = new Scheduler(
+			graph,
+			bridge,
+			stateDetector as any,
+			planner,
+			agents,
+			{ maxParallel: 1, autonomyLevel: "high", defaultAgent: "mock", goal: "test goal" },
+		);
+		scheduler.on("need_human", needHumanSpy);
+
+		await scheduler.start();
+
+		// sendResponse should be called exactly 3 times (the limit)
+		expect(adapter.sendResponse).toHaveBeenCalledTimes(3);
+		// need_human should have been emitted for the 4th attempt
+		expect(needHumanSpy).toHaveBeenCalled();
+		const reason = needHumanSpy.mock.calls[0][1];
+		expect(reason).toContain("3");
+	});
 });
