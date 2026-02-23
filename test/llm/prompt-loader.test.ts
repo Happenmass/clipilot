@@ -17,7 +17,6 @@ describe("PromptLoader", () => {
 		await writeFile(join(builtinDir, "planner.md"), "Default planner prompt\n\n{{memory}}");
 		await writeFile(join(builtinDir, "state-analyzer.md"), "Default state analyzer prompt\n\n{{memory}}");
 		await writeFile(join(builtinDir, "error-analyzer.md"), "Default error analyzer prompt\n\n{{memory}}");
-		await writeFile(join(builtinDir, "prompt-generator.md"), "Default prompt generator prompt\n\n{{memory}}");
 		await writeFile(join(builtinDir, "session-summarizer.md"), "Default session summarizer prompt");
 	});
 
@@ -32,7 +31,6 @@ describe("PromptLoader", () => {
 		expect(loader.getRaw("planner")).toBe("Default planner prompt\n\n{{memory}}");
 		expect(loader.getRaw("state-analyzer")).toBe("Default state analyzer prompt\n\n{{memory}}");
 		expect(loader.getRaw("error-analyzer")).toBe("Default error analyzer prompt\n\n{{memory}}");
-		expect(loader.getRaw("prompt-generator")).toBe("Default prompt generator prompt\n\n{{memory}}");
 		expect(loader.getRaw("session-summarizer")).toBe("Default session summarizer prompt");
 	});
 

@@ -3,14 +3,21 @@ import { homedir } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 
-export type PromptName = "planner" | "state-analyzer" | "error-analyzer" | "prompt-generator" | "session-summarizer";
+export type PromptName =
+	| "planner"
+	| "state-analyzer"
+	| "error-analyzer"
+	| "session-summarizer"
+	| "main-agent"
+	| "history-compressor";
 
 const PROMPT_FILE_MAP: Record<PromptName, string> = {
 	planner: "planner.md",
 	"state-analyzer": "state-analyzer.md",
 	"error-analyzer": "error-analyzer.md",
-	"prompt-generator": "prompt-generator.md",
 	"session-summarizer": "session-summarizer.md",
+	"main-agent": "main-agent.md",
+	"history-compressor": "history-compressor.md",
 };
 
 const __filename = fileURLToPath(import.meta.url);
