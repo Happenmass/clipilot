@@ -11,10 +11,6 @@ export interface PaneAnalysis {
 	status: PaneStatus;
 	confidence: number;
 	detail: string;
-	suggestedAction?: {
-		type: "send_keys" | "wait" | "retry" | "skip" | "escalate";
-		value?: string;
-	};
 }
 
 export interface DeepAnalysis extends PaneAnalysis {
@@ -162,7 +158,6 @@ export class StateDetector {
 					status: "error",
 					confidence: 0.7,
 					detail: "Error pattern detected in output",
-					suggestedAction: { type: "escalate" },
 				};
 			}
 		}
@@ -180,7 +175,6 @@ export class StateDetector {
 					status: "waiting_input",
 					confidence: 0.6,
 					detail: "Agent appears to be waiting for input",
-					suggestedAction: { type: "send_keys" },
 				};
 			}
 		}
@@ -192,7 +186,6 @@ export class StateDetector {
 					status: "active",
 					confidence: 0.8,
 					detail: "Agent is actively working",
-					suggestedAction: { type: "wait" },
 				};
 			}
 		}
@@ -224,7 +217,6 @@ export class StateDetector {
 				status: "unknown",
 				confidence: 0,
 				detail: `Analysis failed: ${err.message}`,
-				suggestedAction: { type: "escalate" },
 			};
 		}
 	}
