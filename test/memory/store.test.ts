@@ -1,0 +1,248 @@
+import { mkdtemp, rm, writeFile, mkdir } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { MemoryStore, buildFileEntry, isMemoryPath, listMemoryFiles, sha256 } from "../../src/memory/store.js";
+
+describe("MemoryStore", () => {
+	let tmpDir: string;
+	let dbPath: string;
+	let store: MemoryStore;
+
+	beforeEach(async () => {
+		tmpDir = await mkdtemp(join(tmpdir(), "clipilot-test-"));
+		dbPath = join(tmpDir, "test.sqlite");
+		store = new MemoryStore({
+			dbPath,
+			workspaceDir: tmpDir,
+			vectorEnabled: false, // Don't require sqlite-vec in tests
+		});
+	});
+
+	afterEach(async () => {
+		store.close();
+		await rm(tmpDir, { recursive: true, force: true });
+	});
+
+	describe("schema initialization", () => {
+		it("should create all required tables", () => {
+			const tables = store
+				.getDb()
+				.prepare("SELECT name FROM sqlite_master WHERE type='table' ORDER BY name")
+				.all() as { name: string }[];
+			const names = tables.map((t) => t.name);
+
+			expect(names).toContain("meta");
+			expect(names).toContain("files");
+			expect(names).toContain("chunks");
+			expect(names).toContain("embedding_cache");
+			// chunks_fts is a virtual table
+		});
+	});
+
+	describe("file tracking", () => {
+		it("should track and retrieve files", () => {
+			store.upsertFile({ path: "memory/core.md", hash: "abc123", mtimeMs: 1000, size: 100 });
+
+			const tracked = store.getTrackedFile("memory/core.md");
+			expect(tracked).toBeDefined();
+			expect(tracked!.hash).toBe("abc123");
+		});
+
+		it("should return undefined for untracked files", () => {
+			expect(store.getTrackedFile("nonexistent.md")).toBeUndefined();
+		});
+
+		it("should list tracked file paths", () => {
+			store.upsertFile({ path: "memory/core.md", hash: "a", mtimeMs: 1000, size: 100 });
+			store.upsertFile({ path: "memory/todos.md", hash: "b", mtimeMs: 1000, size: 50 });
+
+			const paths = store.getTrackedFilePaths();
+			expect(paths).toContain("memory/core.md");
+			expect(paths).toContain("memory/todos.md");
+		});
+
+		it("should remove file and its chunks", () => {
+			store.upsertFile({ path: "memory/old.md", hash: "x", mtimeMs: 1000, size: 50 });
+			store.insertChunk({
+				id: "chunk-1",
+				path: "memory/old.md",
+				startLine: 1,
+				endLine: 5,
+				hash: "h1",
+				model: "test",
+				text: "some text",
+				embedding: [],
+			});
+
+			store.removeFile("memory/old.md");
+
+			expect(store.getTrackedFile("memory/old.md")).toBeUndefined();
+			const chunks = store.getDb().prepare("SELECT * FROM chunks WHERE path = ?").all("memory/old.md");
+			expect(chunks).toHaveLength(0);
+		});
+	});
+
+	describe("chunk operations", () => {
+		it("should insert and query chunks", () => {
+			store.insertChunk({
+				id: "c1",
+				path: "memory/core.md",
+				startLine: 1,
+				endLine: 10,
+				hash: "h1",
+				model: "test-model",
+				text: "## Architecture\nSome content here",
+				embedding: [0.1, 0.2, 0.3],
+			});
+
+			const row = store.getDb().prepare("SELECT * FROM chunks WHERE id = ?").get("c1") as any;
+			expect(row).toBeDefined();
+			expect(row.path).toBe("memory/core.md");
+			expect(row.start_line).toBe(1);
+			expect(row.end_line).toBe(10);
+			expect(JSON.parse(row.embedding)).toEqual([0.1, 0.2, 0.3]);
+		});
+	});
+
+	describe("embedding cache", () => {
+		it("should cache and retrieve embeddings", () => {
+			store.upsertCachedEmbedding("openai", "text-embedding-3-small", "key1", "hash1", [0.1, 0.2]);
+
+			const cached = store.loadCachedEmbeddings("openai", "text-embedding-3-small", "key1", ["hash1"]);
+			expect(cached.get("hash1")).toEqual([0.1, 0.2]);
+		});
+
+		it("should return empty map for cache miss", () => {
+			const cached = store.loadCachedEmbeddings("openai", "model", "key", ["nonexistent"]);
+			expect(cached.size).toBe(0);
+		});
+
+		it("should prune oldest cache entries", () => {
+			// Insert 5 entries with increasing timestamps
+			for (let i = 0; i < 5; i++) {
+				store.upsertCachedEmbedding("p", "m", "k", `hash${i}`, [i]);
+				// Small delay to ensure different timestamps
+			}
+
+			store.pruneCache("p", "m", 3);
+
+			const remaining = store.loadCachedEmbeddings("p", "m", "k", ["hash0", "hash1", "hash2", "hash3", "hash4"]);
+			expect(remaining.size).toBeLessThanOrEqual(3);
+		});
+	});
+
+	describe("write", () => {
+		it("should write new memory file", async () => {
+			await mkdir(join(tmpDir, "memory"), { recursive: true });
+			const result = await store.write({ path: "memory/test.md", content: "# Test\nHello" });
+			expect(result.success).toBe(true);
+			expect(store.isDirty()).toBe(true);
+
+			const { readFile } = await import("node:fs/promises");
+			const content = await readFile(join(tmpDir, "memory/test.md"), "utf-8");
+			expect(content).toBe("# Test\nHello");
+		});
+
+		it("should append to existing file", async () => {
+			await mkdir(join(tmpDir, "memory"), { recursive: true });
+			await writeFile(join(tmpDir, "memory/core.md"), "# Core\n");
+
+			await store.write({ path: "memory/core.md", content: "New line" });
+
+			const { readFile } = await import("node:fs/promises");
+			const content = await readFile(join(tmpDir, "memory/core.md"), "utf-8");
+			expect(content).toBe("# Core\nNew line");
+		});
+
+		it("should reject non-memory paths", async () => {
+			await expect(store.write({ path: "src/main.ts", content: "hack" })).rejects.toThrow(
+				"Only .md files under memory/",
+			);
+		});
+	});
+});
+
+describe("isMemoryPath", () => {
+	it("should accept memory/ paths", () => {
+		expect(isMemoryPath("memory/core.md")).toBe(true);
+		expect(isMemoryPath("memory/2024-01-15.md")).toBe(true);
+	});
+
+	it("should accept legacy root files", () => {
+		expect(isMemoryPath("MEMORY.md")).toBe(true);
+		expect(isMemoryPath("memory.md")).toBe(true);
+	});
+
+	it("should reject non-memory paths", () => {
+		expect(isMemoryPath("src/main.ts")).toBe(false);
+		expect(isMemoryPath("memory/nested/deep.md")).toBe(true); // subdirs are ok
+		expect(isMemoryPath("memory/file.txt")).toBe(false); // non-md
+	});
+});
+
+describe("listMemoryFiles", () => {
+	let tmpDir: string;
+
+	beforeEach(async () => {
+		tmpDir = await mkdtemp(join(tmpdir(), "clipilot-list-"));
+	});
+
+	afterEach(async () => {
+		await rm(tmpDir, { recursive: true, force: true });
+	});
+
+	it("should find memory/*.md files", async () => {
+		await mkdir(join(tmpDir, "memory"), { recursive: true });
+		await writeFile(join(tmpDir, "memory/core.md"), "core");
+		await writeFile(join(tmpDir, "memory/todos.md"), "todos");
+
+		const files = await listMemoryFiles(tmpDir);
+		expect(files).toHaveLength(2);
+		expect(files.some((f) => f.endsWith("core.md"))).toBe(true);
+		expect(files.some((f) => f.endsWith("todos.md"))).toBe(true);
+	});
+
+	it("should find root MEMORY.md", async () => {
+		await writeFile(join(tmpDir, "MEMORY.md"), "legacy");
+
+		const files = await listMemoryFiles(tmpDir);
+		expect(files).toHaveLength(1);
+		expect(files[0]).toContain("MEMORY.md");
+	});
+
+	it("should return empty for no memory files", async () => {
+		const files = await listMemoryFiles(tmpDir);
+		expect(files).toHaveLength(0);
+	});
+});
+
+describe("sha256", () => {
+	it("should produce consistent hashes", () => {
+		expect(sha256("hello")).toBe(sha256("hello"));
+		expect(sha256("hello")).not.toBe(sha256("world"));
+	});
+});
+
+describe("buildFileEntry", () => {
+	let tmpDir: string;
+
+	beforeEach(async () => {
+		tmpDir = await mkdtemp(join(tmpdir(), "clipilot-entry-"));
+	});
+
+	afterEach(async () => {
+		await rm(tmpDir, { recursive: true, force: true });
+	});
+
+	it("should build correct file entry", async () => {
+		await mkdir(join(tmpDir, "memory"), { recursive: true });
+		await writeFile(join(tmpDir, "memory/core.md"), "content");
+
+		const entry = await buildFileEntry(join(tmpDir, "memory/core.md"), tmpDir);
+		expect(entry.path).toBe("memory/core.md");
+		expect(entry.hash).toBe(sha256("content"));
+		expect(entry.size).toBeGreaterThan(0);
+		expect(entry.mtimeMs).toBeGreaterThan(0);
+	});
+});

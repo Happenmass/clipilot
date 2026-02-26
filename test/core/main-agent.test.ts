@@ -27,6 +27,14 @@ function createMockContextManager() {
 		shouldCompress: vi.fn().mockReturnValue(false),
 		compress: vi.fn(),
 		getConversationLength: vi.fn().mockReturnValue(0),
+		prepareForLLM: vi.fn().mockReturnValue({
+			system: "You are the Main Agent",
+			messages: [],
+		}),
+		reportUsage: vi.fn(),
+		shouldRunMemoryFlush: vi.fn().mockReturnValue(false),
+		runMemoryFlush: vi.fn(),
+		getCurrentTokenEstimate: vi.fn().mockReturnValue(0),
 	} as any;
 }
 

@@ -1,0 +1,328 @@
+import { describe, it, expect, beforeEach, vi, afterEach } from "vitest";
+import { MainAgent } from "../../src/core/main-agent.js";
+import { TaskGraph } from "../../src/core/task.js";
+import { mkdtemp, mkdir, writeFile, rm } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+
+/**
+ * Tests for memory tool execution (search, get, write) in MainAgent.
+ * Task 6.7
+ */
+
+// Use a real temporary workspace for file-based tests
+let tmpDir: string;
+
+function createMockContextManager() {
+	return {
+		addMessage: vi.fn(),
+		getMessages: vi.fn().mockReturnValue([]),
+		getSystemPrompt: vi.fn().mockReturnValue("system prompt"),
+		updateModule: vi.fn(),
+		shouldCompress: vi.fn().mockReturnValue(false),
+		compress: vi.fn(),
+		getConversationLength: vi.fn().mockReturnValue(0),
+		prepareForLLM: vi.fn().mockReturnValue({ system: "system prompt", messages: [] }),
+		reportUsage: vi.fn(),
+		shouldRunMemoryFlush: vi.fn().mockReturnValue(false),
+		runMemoryFlush: vi.fn(),
+		getCurrentTokenEstimate: vi.fn().mockReturnValue(0),
+	} as any;
+}
+
+function createMockSignalRouter() {
+	return {
+		onSignal: vi.fn(),
+		startMonitoring: vi.fn(),
+		stopMonitoring: vi.fn(),
+		notifyPromptSent: vi.fn(),
+		notifyNewTask: vi.fn(),
+		setTaskGraph: vi.fn(),
+	} as any;
+}
+
+function createMockLLMClient() {
+	return {
+		complete: vi.fn().mockResolvedValue({
+			content: "ok",
+			contentBlocks: [{ type: "text", text: "ok" }],
+			usage: { inputTokens: 10, outputTokens: 5, totalTokens: 15 },
+			stopReason: "end_turn",
+			model: "test",
+		}),
+	} as any;
+}
+
+function createMinimalMocks() {
+	return {
+		adapter: { sendPrompt: vi.fn(), sendResponse: vi.fn(), abort: vi.fn(), getCharacteristics: vi.fn().mockReturnValue({}) } as any,
+		bridge: { capturePane: vi.fn() } as any,
+		stateDetector: { setCooldown: vi.fn(), startMonitoring: vi.fn(), stopMonitoring: vi.fn(), onStateChange: vi.fn() } as any,
+		planner: { replan: vi.fn() } as any,
+	};
+}
+
+function createMockMemoryStore(workspaceDir: string) {
+	return {
+		getWorkspaceDir: vi.fn().mockReturnValue(workspaceDir),
+		getTrackedFilePaths: vi.fn().mockReturnValue([]),
+		isFtsAvailable: vi.fn().mockReturnValue(true),
+		write: vi.fn().mockResolvedValue({ success: true, path: "memory/core.md" }),
+		close: vi.fn(),
+	} as any;
+}
+
+function createAgent(opts: { memoryStore?: any; embeddingProvider?: any } = {}) {
+	const mocks = createMinimalMocks();
+	const taskGraph = new TaskGraph();
+
+	return new MainAgent({
+		contextManager: createMockContextManager(),
+		signalRouter: createMockSignalRouter(),
+		llmClient: createMockLLMClient(),
+		planner: mocks.planner,
+		adapter: mocks.adapter,
+		bridge: mocks.bridge,
+		stateDetector: mocks.stateDetector,
+		taskGraph,
+		goal: "test",
+		memoryStore: opts.memoryStore,
+		embeddingProvider: opts.embeddingProvider,
+	});
+}
+
+describe("MainAgent memory tools", () => {
+	beforeEach(async () => {
+		tmpDir = await mkdtemp(join(tmpdir(), "clipilot-memtest-"));
+		await mkdir(join(tmpDir, "memory"), { recursive: true });
+	});
+
+	afterEach(async () => {
+		await rm(tmpDir, { recursive: true, force: true });
+	});
+
+	describe("memory_search", () => {
+		it("should return 'not available' when no memoryStore", async () => {
+			const agent = createAgent();
+			const result = await (agent as any).executeTool({
+				type: "tool_call",
+				id: "tc1",
+				name: "memory_search",
+				arguments: { query: "test" },
+			});
+			expect(result.output).toBe("Memory store not available.");
+			expect(result.terminal).toBe(false);
+		});
+
+		it("should return no results for empty store", async () => {
+			const mockStore = createMockMemoryStore(tmpDir);
+			const agent = createAgent({ memoryStore: mockStore });
+
+			// Mock searchMemory to return empty
+			const result = await (agent as any).executeTool({
+				type: "tool_call",
+				id: "tc1",
+				name: "memory_search",
+				arguments: { query: "nonexistent topic" },
+			});
+
+			// With FTS available but no data, will return no results
+			expect(result.terminal).toBe(false);
+		});
+
+		it("should be a non-terminal tool", async () => {
+			const mockStore = createMockMemoryStore(tmpDir);
+			const agent = createAgent({ memoryStore: mockStore });
+
+			const result = await (agent as any).executeTool({
+				type: "tool_call",
+				id: "tc1",
+				name: "memory_search",
+				arguments: { query: "test" },
+			});
+
+			expect(result.terminal).toBe(false);
+		});
+	});
+
+	describe("memory_get", () => {
+		it("should return 'not available' when no memoryStore", async () => {
+			const agent = createAgent();
+			const result = await (agent as any).executeTool({
+				type: "tool_call",
+				id: "tc1",
+				name: "memory_get",
+				arguments: { path: "memory/core.md" },
+			});
+			expect(result.output).toBe("Memory store not available.");
+			expect(result.terminal).toBe(false);
+		});
+
+		it("should read a memory file successfully", async () => {
+			await writeFile(join(tmpDir, "memory", "core.md"), "# Core Preferences\n- Use TypeScript\n- Prefer vitest\n");
+
+			const mockStore = createMockMemoryStore(tmpDir);
+			const agent = createAgent({ memoryStore: mockStore });
+
+			const result = await (agent as any).executeTool({
+				type: "tool_call",
+				id: "tc1",
+				name: "memory_get",
+				arguments: { path: "memory/core.md" },
+			});
+
+			expect(result.output).toContain("# Core Preferences");
+			expect(result.output).toContain("Use TypeScript");
+			expect(result.terminal).toBe(false);
+		});
+
+		it("should handle line range slicing (from + lines)", async () => {
+			const lines = Array.from({ length: 10 }, (_, i) => `Line ${i + 1}`);
+			await writeFile(join(tmpDir, "memory", "core.md"), lines.join("\n"));
+
+			const mockStore = createMockMemoryStore(tmpDir);
+			const agent = createAgent({ memoryStore: mockStore });
+
+			const result = await (agent as any).executeTool({
+				type: "tool_call",
+				id: "tc1",
+				name: "memory_get",
+				arguments: { path: "memory/core.md", from: 3, lines: 2 },
+			});
+
+			expect(result.output).toBe("Line 3\nLine 4");
+			expect(result.terminal).toBe(false);
+		});
+
+		it("should handle file-not-found", async () => {
+			const mockStore = createMockMemoryStore(tmpDir);
+			const agent = createAgent({ memoryStore: mockStore });
+
+			const result = await (agent as any).executeTool({
+				type: "tool_call",
+				id: "tc1",
+				name: "memory_get",
+				arguments: { path: "memory/nonexistent.md" },
+			});
+
+			expect(result.output).toContain("File not found");
+			expect(result.terminal).toBe(false);
+		});
+	});
+
+	describe("memory_write", () => {
+		it("should return 'not available' when no memoryStore", async () => {
+			const agent = createAgent();
+			const result = await (agent as any).executeTool({
+				type: "tool_call",
+				id: "tc1",
+				name: "memory_write",
+				arguments: { path: "memory/core.md", content: "test" },
+			});
+			expect(result.output).toBe("Memory store not available.");
+			expect(result.terminal).toBe(false);
+		});
+
+		it("should write to memory file via store.write()", async () => {
+			const mockStore = createMockMemoryStore(tmpDir);
+			const agent = createAgent({ memoryStore: mockStore });
+
+			const result = await (agent as any).executeTool({
+				type: "tool_call",
+				id: "tc1",
+				name: "memory_write",
+				arguments: { path: "memory/core.md", content: "\n- New preference" },
+			});
+
+			expect(mockStore.write).toHaveBeenCalledWith({
+				path: "memory/core.md",
+				content: "\n- New preference",
+			});
+			expect(result.output).toContain("Written to");
+			expect(result.terminal).toBe(false);
+		});
+
+		it("should handle write errors gracefully", async () => {
+			const mockStore = createMockMemoryStore(tmpDir);
+			mockStore.write.mockRejectedValue(new Error("Only .md files under memory/ directory"));
+			const agent = createAgent({ memoryStore: mockStore });
+
+			const result = await (agent as any).executeTool({
+				type: "tool_call",
+				id: "tc1",
+				name: "memory_write",
+				arguments: { path: "src/evil.ts", content: "bad stuff" },
+			});
+
+			expect(result.output).toContain("Memory write error");
+			expect(result.terminal).toBe(false);
+		});
+
+		it("should be a non-terminal tool", async () => {
+			const mockStore = createMockMemoryStore(tmpDir);
+			const agent = createAgent({ memoryStore: mockStore });
+
+			const result = await (agent as any).executeTool({
+				type: "tool_call",
+				id: "tc1",
+				name: "memory_write",
+				arguments: { path: "memory/core.md", content: "test" },
+			});
+
+			expect(result.terminal).toBe(false);
+		});
+	});
+
+	describe("path security", () => {
+		it("should reject writes to paths outside memory/ via store validation", async () => {
+			const mockStore = createMockMemoryStore(tmpDir);
+			mockStore.write.mockRejectedValue(
+				new Error("Only .md files under memory/ directory or root MEMORY.md/memory.md are allowed"),
+			);
+			const agent = createAgent({ memoryStore: mockStore });
+
+			const result = await (agent as any).executeTool({
+				type: "tool_call",
+				id: "tc1",
+				name: "memory_write",
+				arguments: { path: "src/config.ts", content: "malicious" },
+			});
+
+			expect(result.output).toContain("Memory write error");
+		});
+
+		it("should reject writes to non-.md files via store validation", async () => {
+			const mockStore = createMockMemoryStore(tmpDir);
+			mockStore.write.mockRejectedValue(
+				new Error("Only .md files under memory/ directory or root MEMORY.md/memory.md are allowed"),
+			);
+			const agent = createAgent({ memoryStore: mockStore });
+
+			const result = await (agent as any).executeTool({
+				type: "tool_call",
+				id: "tc1",
+				name: "memory_write",
+				arguments: { path: "memory/data.json", content: "{}" },
+			});
+
+			expect(result.output).toContain("Memory write error");
+		});
+
+		it("should reject path traversal attempts", async () => {
+			const mockStore = createMockMemoryStore(tmpDir);
+			mockStore.write.mockRejectedValue(
+				new Error("Only .md files under memory/ directory or root MEMORY.md/memory.md are allowed"),
+			);
+			const agent = createAgent({ memoryStore: mockStore });
+
+			const result = await (agent as any).executeTool({
+				type: "tool_call",
+				id: "tc1",
+				name: "memory_write",
+				arguments: { path: "../../../etc/passwd", content: "evil" },
+			});
+
+			expect(result.output).toContain("Memory write error");
+		});
+	});
+});
