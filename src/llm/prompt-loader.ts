@@ -9,7 +9,8 @@ export type PromptName =
 	| "error-analyzer"
 	| "session-summarizer"
 	| "main-agent"
-	| "history-compressor";
+	| "history-compressor"
+	| "memory-flush";
 
 const PROMPT_FILE_MAP: Record<PromptName, string> = {
 	planner: "planner.md",
@@ -18,6 +19,7 @@ const PROMPT_FILE_MAP: Record<PromptName, string> = {
 	"session-summarizer": "session-summarizer.md",
 	"main-agent": "main-agent.md",
 	"history-compressor": "history-compressor.md",
+	"memory-flush": "memory-flush.md",
 };
 
 const __filename = fileURLToPath(import.meta.url);

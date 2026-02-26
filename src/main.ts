@@ -6,9 +6,9 @@ import chalk from "chalk";
 import type { AgentAdapter } from "./agents/adapter.js";
 import { ClaudeCodeAdapter } from "./agents/claude-code.js";
 import { parseCliArgs, printHelp, printVersion } from "./cli.js";
+import { join } from "node:path";
 import { ContextManager } from "./core/context-manager.js";
 import { MainAgent } from "./core/main-agent.js";
-import { Memory } from "./core/memory.js";
 import { Planner } from "./core/planner.js";
 import { Scheduler } from "./core/scheduler.js";
 import { Session } from "./core/session.js";
@@ -16,6 +16,9 @@ import { SignalRouter } from "./core/signal-router.js";
 import { LLMClient } from "./llm/client.js";
 import { PromptLoader } from "./llm/prompt-loader.js";
 import { getAllProviders } from "./llm/providers/registry.js";
+import { createEmbeddingProvider } from "./memory/embedder.js";
+import { MemoryStore } from "./memory/store.js";
+import { syncMemoryFiles } from "./memory/sync.js";
 import { TmuxBridge } from "./tmux/bridge.js";
 import { StateDetector } from "./tmux/state-detector.js";
 import { runDoctor } from "./doctor/run.js";
@@ -120,9 +123,11 @@ async function main(): Promise<void> {
 
 	// Handle "remember" subcommand
 	if (args.rememberText !== undefined) {
-		const memory = new Memory(args.cwd);
 		if (args.rememberText) {
-			await memory.remember(args.rememberText);
+			const dbPath = join(args.cwd, ".clipilot", "memory.sqlite");
+			const store = new MemoryStore({ dbPath, workspaceDir: args.cwd, vectorEnabled: false });
+			await store.write({ path: "memory/core.md", content: `\n- ${args.rememberText}` });
+			store.close();
 			console.log(`${chalk.green("Remembered:")} ${args.rememberText}`);
 		} else {
 			console.error(chalk.yellow("Please provide text to remember."));
@@ -174,16 +179,50 @@ async function main(): Promise<void> {
 		baseUrl: llmBaseUrl,
 	});
 
-	// Initialize PromptLoader and Memory
+	// Initialize PromptLoader
 	const promptLoader = new PromptLoader();
 	await promptLoader.load(args.cwd);
 
-	const memory = new Memory(args.cwd);
-	await memory.load();
+	// Initialize MemoryStore + Embedding Provider
+	const dbPath = join(args.cwd, ".clipilot", "memory.sqlite");
+	const memoryStore = new MemoryStore({
+		dbPath,
+		workspaceDir: args.cwd,
+		vectorEnabled: true,
+	});
 
-	const memoryContent = memory.getFormattedMemory();
-	if (memoryContent) {
-		promptLoader.setGlobalContext({ memory: memoryContent });
+	let embeddingProvider: Awaited<ReturnType<typeof createEmbeddingProvider>>["provider"] = null;
+
+	if (config.memory.embeddingProvider !== "none") {
+		const embeddingResult = await createEmbeddingProvider({
+			provider: (config.memory.embeddingProvider ?? "auto") as any,
+			fallback: "none",
+			model: config.memory.embeddingModel,
+		});
+		embeddingProvider = embeddingResult.provider;
+	}
+	if (embeddingProvider) {
+		logger.info("main", `Embedding provider: ${embeddingProvider.id} (${embeddingProvider.model})`);
+	} else {
+		logger.info("main", "No embedding provider available — FTS-only mode");
+	}
+
+	// Initial memory index sync
+	try {
+		const syncResult = await syncMemoryFiles(memoryStore, {
+			embeddingProvider,
+			cache: embeddingProvider
+				? { provider: embeddingProvider.id, model: embeddingProvider.model, providerKey: "default" }
+				: undefined,
+		});
+		if (syncResult.added + syncResult.updated + syncResult.deleted > 0) {
+			logger.info(
+				"main",
+				`Memory sync: +${syncResult.added} ~${syncResult.updated} -${syncResult.deleted} (${syncResult.chunksIndexed} chunks)`,
+			);
+		}
+	} catch (err: any) {
+		logger.warn("main", `Memory sync failed (non-fatal): ${err.message}`);
 	}
 
 	console.log(chalk.dim("Agent:    ") + args.agent);
@@ -238,9 +277,10 @@ async function main(): Promise<void> {
 	const contextManager = new ContextManager({
 		llmClient,
 		promptLoader,
+		memoryStore,
+		flushThreshold: config.memory.flushThreshold,
 	});
 	contextManager.updateModule("goal", goal);
-	contextManager.updateModule("memory", memoryContent || "");
 
 	const signalRouter = new SignalRouter(stateDetector, bridge, contextManager, taskGraph);
 
@@ -255,6 +295,16 @@ async function main(): Promise<void> {
 		stateDetector,
 		taskGraph,
 		goal,
+		memoryStore,
+		embeddingProvider,
+		searchConfig: {
+			vectorWeight: config.memory.vectorWeight,
+			textWeight: 1 - config.memory.vectorWeight,
+			temporalDecay: {
+				enabled: true,
+				halfLifeDays: config.memory.decayHalfLifeDays,
+			},
+		},
 	});
 
 	const scheduler = new Scheduler(
@@ -311,7 +361,7 @@ async function main(): Promise<void> {
 
 	await scheduler.start();
 
-	// Session summary: extract lessons learned via LLM
+	// Session summary: extract lessons learned via LLM, persist to memory
 	try {
 		const allTasks = taskGraph.getAllTasks();
 		const taskSummary = allTasks
@@ -332,12 +382,19 @@ async function main(): Promise<void> {
 		);
 
 		if (summaryResponse.content.trim()) {
-			await memory.recordLesson(`[${new Date().toISOString().slice(0, 10)}] ${summaryResponse.content.trim()}`);
+			const dateStr = new Date().toISOString().slice(0, 10);
+			await memoryStore.write({
+				path: `memory/${dateStr}.md`,
+				content: `\n## Session Summary\n${summaryResponse.content.trim()}`,
+			});
 			logger.info("main", "Session lessons recorded to memory");
 		}
 	} catch (err: any) {
 		logger.error("main", `Failed to summarize session: ${err.message}`);
 	}
+
+	// Close MemoryStore
+	memoryStore.close();
 
 	// Save session
 	session.setStatus(taskGraph.getProgress().failed > 0 ? "failed" : "completed");

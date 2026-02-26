@@ -27,6 +27,27 @@ export interface TmuxConfig {
 	sessionPrefix: string;
 }
 
+export interface MemoryConfig {
+	/** Embedding provider: "auto" | "local" | "openai" | "gemini" | "voyage" | "mistral" | "none" */
+	embeddingProvider: string;
+	/** Embedding model override (provider-specific). If omitted, uses provider default. */
+	embeddingModel?: string;
+	/** Maximum tokens per chunk when indexing markdown files. Default 400. */
+	chunkTokens: number;
+	/** Overlap tokens between adjacent chunks. Default 50. */
+	chunkOverlap: number;
+	/** Hybrid search vector weight (0-1). Keyword weight = 1 - vectorWeight. Default 0.7. */
+	vectorWeight: number;
+	/** Minimum score threshold for search results (0-1). Default 0.1. */
+	minScore: number;
+	/** Maximum number of search results to return. Default 10. */
+	topK: number;
+	/** Temporal decay half-life in days for date-named files. Default 30. */
+	decayHalfLifeDays: number;
+	/** Context window flush threshold ratio. Default 0.6. */
+	flushThreshold: number;
+}
+
 export interface CLIPilotConfig {
 	defaultAgent: string;
 	autonomyLevel: string;
@@ -34,6 +55,7 @@ export interface CLIPilotConfig {
 	providers?: ProviderKeyConfig;
 	stateDetector: StateDetectorConfig;
 	tmux: TmuxConfig;
+	memory: MemoryConfig;
 }
 
 const CONFIG_DIR = join(homedir(), ".clipilot");
@@ -53,6 +75,16 @@ const DEFAULT_CONFIG: CLIPilotConfig = {
 	},
 	tmux: {
 		sessionPrefix: "clipilot",
+	},
+	memory: {
+		embeddingProvider: "auto",
+		chunkTokens: 400,
+		chunkOverlap: 50,
+		vectorWeight: 0.7,
+		minScore: 0.1,
+		topK: 10,
+		decayHalfLifeDays: 30,
+		flushThreshold: 0.6,
 	},
 };
 
@@ -84,6 +116,7 @@ export async function loadConfig(): Promise<CLIPilotConfig> {
 			llm: { ...DEFAULT_CONFIG.llm, ...userConfig.llm },
 			stateDetector: { ...DEFAULT_CONFIG.stateDetector, ...userConfig.stateDetector },
 			tmux: { ...DEFAULT_CONFIG.tmux, ...userConfig.tmux },
+			memory: { ...DEFAULT_CONFIG.memory, ...userConfig.memory },
 		};
 	} catch {
 		return { ...DEFAULT_CONFIG };

@@ -1,7 +1,13 @@
 import { EventEmitter } from "node:events";
+import { readFile } from "node:fs/promises";
+import { join } from "node:path";
 import type { AgentAdapter } from "../agents/adapter.js";
 import type { LLMClient } from "../llm/client.js";
 import type { ToolCallContent, ToolDefinition } from "../llm/types.js";
+import { buildCategoryPathFilter, categoryFromPath } from "../memory/category.js";
+import { searchMemory } from "../memory/search.js";
+import type { MemoryStore } from "../memory/store.js";
+import type { EmbeddingProvider, HybridSearchConfig, MemoryCategory } from "../memory/types.js";
 import type { TmuxBridge } from "../tmux/bridge.js";
 import type { StateDetector } from "../tmux/state-detector.js";
 import { logger } from "../utils/logger.js";
@@ -99,6 +105,52 @@ const TOOL_DEFINITIONS: ToolDefinition[] = [
 			required: ["reason"],
 		},
 	},
+	{
+		name: "memory_search",
+		description:
+			"Search project memory for relevant information. Use this before answering questions about prior work, decisions, dates, people, preferences, or todos.",
+		parameters: {
+			type: "object",
+			properties: {
+				query: { type: "string", description: "Search query text (natural language)" },
+				maxResults: { type: "number", description: "Maximum results to return (default 10)" },
+				minScore: { type: "number", description: "Minimum relevance score 0-1 (default 0.1)" },
+				category: {
+					type: "string",
+					description:
+						'Optional category filter: "core", "preferences", "people", "todos", "daily", "legacy", "topic"',
+				},
+			},
+			required: ["query"],
+		},
+	},
+	{
+		name: "memory_get",
+		description:
+			"Read a specific memory file. Optionally specify a line range. Use after memory_search to read full context around a search hit.",
+		parameters: {
+			type: "object",
+			properties: {
+				path: { type: "string", description: 'Relative path (e.g. "memory/core.md")' },
+				from: { type: "number", description: "1-indexed start line (optional)" },
+				lines: { type: "number", description: "Number of lines to read (optional)" },
+			},
+			required: ["path"],
+		},
+	},
+	{
+		name: "memory_write",
+		description:
+			"Write content to a memory file. Only memory/*.md files are allowed. Creates the file if it does not exist, appends if it does.",
+		parameters: {
+			type: "object",
+			properties: {
+				path: { type: "string", description: 'Relative path (e.g. "memory/core.md")' },
+				content: { type: "string", description: "Content to write or append" },
+			},
+			required: ["path", "content"],
+		},
+	},
 ];
 
 export class MainAgent extends EventEmitter<MainAgentEvents> {
@@ -112,6 +164,15 @@ export class MainAgent extends EventEmitter<MainAgentEvents> {
 	private taskGraph: TaskGraph;
 	private goal: string;
 	private paneTarget: string | null = null;
+	private memoryStore: MemoryStore | null = null;
+	private embeddingProvider: EmbeddingProvider | null = null;
+	private searchConfig: HybridSearchConfig = {
+		enabled: true,
+		vectorWeight: 0.7,
+		textWeight: 0.3,
+		candidateMultiplier: 3,
+		temporalDecay: { enabled: true, halfLifeDays: 30 },
+	};
 
 	constructor(opts: {
 		contextManager: ContextManager;
@@ -123,6 +184,9 @@ export class MainAgent extends EventEmitter<MainAgentEvents> {
 		stateDetector: StateDetector;
 		taskGraph: TaskGraph;
 		goal: string;
+		memoryStore?: MemoryStore;
+		embeddingProvider?: EmbeddingProvider | null;
+		searchConfig?: Partial<HybridSearchConfig>;
 	}) {
 		super();
 		this.contextManager = opts.contextManager;
@@ -134,6 +198,11 @@ export class MainAgent extends EventEmitter<MainAgentEvents> {
 		this.stateDetector = opts.stateDetector;
 		this.taskGraph = opts.taskGraph;
 		this.goal = opts.goal;
+		this.memoryStore = opts.memoryStore ?? null;
+		this.embeddingProvider = opts.embeddingProvider ?? null;
+		if (opts.searchConfig) {
+			this.searchConfig = { ...this.searchConfig, ...opts.searchConfig };
+		}
 	}
 
 	setPaneTarget(paneTarget: string): void {
@@ -229,21 +298,35 @@ export class MainAgent extends EventEmitter<MainAgentEvents> {
 	}
 
 	private async runToolUseLoop(): Promise<TaskResult | null> {
-		// Check compression before LLM call
+		// Flush-before-compress ordering (Layer 2 → Layer 3)
+		if (this.contextManager.shouldRunMemoryFlush()) {
+			await this.contextManager.runMemoryFlush();
+		}
 		if (this.contextManager.shouldCompress()) {
 			await this.contextManager.compress();
 		}
 
-		const maxIterations = 10;
+		const maxIterations = 15; // Increased to accommodate memory tool calls
 		for (let i = 0; i < maxIterations; i++) {
+			// Use prepareForLLM() for Layer 1 context guard
+			const { system, messages } = this.contextManager.prepareForLLM();
+
 			const response = await this.llmClient.complete(
-				this.contextManager.getMessages(),
+				messages,
 				{
-					systemPrompt: this.contextManager.getSystemPrompt(),
+					systemPrompt: system,
 					tools: TOOL_DEFINITIONS,
 					temperature: 0.2,
 				},
 			);
+
+			// Report actual token usage for hybrid counting
+			if (response.usage) {
+				this.contextManager.reportUsage({
+					inputTokens: response.usage.inputTokens ?? 0,
+					outputTokens: response.usage.outputTokens ?? 0,
+				});
+			}
 
 			// Add assistant response to conversation
 			this.contextManager.addMessage({
@@ -363,6 +446,92 @@ export class MainAgent extends EventEmitter<MainAgentEvents> {
 					terminal: true,
 					taskResult: { success: false, summary: `Escalated: ${reason}` },
 				};
+			}
+
+			case "memory_search": {
+				if (!this.memoryStore) {
+					return { output: "Memory store not available.", terminal: false };
+				}
+				const query = args.query as string;
+				const maxResults = args.maxResults as number | undefined;
+				const minScore = args.minScore as number | undefined;
+				const category = args.category as MemoryCategory | undefined;
+
+				try {
+					let categoryPathFilter: string[] | undefined;
+					if (category) {
+						const trackedPaths = this.memoryStore.getTrackedFilePaths();
+						categoryPathFilter = buildCategoryPathFilter(category, trackedPaths);
+					}
+
+					const results = await searchMemory(
+						this.memoryStore,
+						query,
+						this.embeddingProvider,
+						this.searchConfig,
+						{ maxResults, minScore, categoryPathFilter },
+					);
+
+					if (results.length === 0) {
+						return { output: "No memory results found for this query.", terminal: false };
+					}
+
+					const formatted = results.map((r, i) =>
+						`[${i + 1}] ${r.path}:${r.startLine}-${r.endLine} (score: ${r.score.toFixed(3)})\n${r.snippet.slice(0, 300)}`,
+					).join("\n\n");
+
+					return { output: formatted, terminal: false };
+				} catch (err: any) {
+					logger.warn("main-agent", `memory_search failed: ${err.message}`);
+					return { output: `Memory search error: ${err.message}`, terminal: false };
+				}
+			}
+
+			case "memory_get": {
+				if (!this.memoryStore) {
+					return { output: "Memory store not available.", terminal: false };
+				}
+				const path = args.path as string;
+				const from = args.from as number | undefined;
+				const lineCount = args.lines as number | undefined;
+
+				try {
+					const absPath = join(this.memoryStore.getWorkspaceDir(), path);
+					const content = await readFile(absPath, "utf-8");
+					const lines = content.split("\n");
+
+					if (from !== undefined) {
+						const startIdx = Math.max(0, from - 1); // 1-indexed to 0-indexed
+						const count = lineCount ?? lines.length - startIdx;
+						const slice = lines.slice(startIdx, startIdx + count);
+						return { output: slice.join("\n"), terminal: false };
+					}
+
+					return { output: content, terminal: false };
+				} catch (err: any) {
+					if (err.code === "ENOENT") {
+						return { output: `File not found: ${path}`, terminal: false };
+					}
+					return { output: `Error reading file: ${err.message}`, terminal: false };
+				}
+			}
+
+			case "memory_write": {
+				if (!this.memoryStore) {
+					return { output: "Memory store not available.", terminal: false };
+				}
+				const path = args.path as string;
+				const content = args.content as string;
+
+				try {
+					const result = await this.memoryStore.write({ path, content });
+					return {
+						output: `Written to ${result.path} successfully.`,
+						terminal: false,
+					};
+				} catch (err: any) {
+					return { output: `Memory write error: ${err.message}`, terminal: false };
+				}
 			}
 
 			default:
