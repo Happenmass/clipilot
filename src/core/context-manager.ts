@@ -190,16 +190,12 @@ export class ContextManager {
 				content: typeof m.content === "string" ? m.content : JSON.stringify(m.content),
 			})),
 			current_goal: this.modules.get("goal") ?? "",
-			current_task_graph: this.modules.get("task_graph_summary") ?? "",
 		});
 
-		const response = await this.llmClient.complete(
-			[{ role: "user", content: input }],
-			{
-				systemPrompt: this.promptLoader.resolve("history-compressor"),
-				temperature: 0,
-			},
-		);
+		const response = await this.llmClient.complete([{ role: "user", content: input }], {
+			systemPrompt: this.promptLoader.resolve("history-compressor"),
+			temperature: 0,
+		});
 
 		this.modules.set("compressed_history", response.content.trim());
 		this.conversation = [];
@@ -263,32 +259,27 @@ export class ContextManager {
 		try {
 			const flushSystemPrompt = this.promptLoader.resolve("memory-flush");
 
-			const response = await this.llmClient.complete(
-				[{ role: "user", content: flushPrompt }],
-				{
-					systemPrompt: flushSystemPrompt,
-					tools: [
-						{
-							name: "memory_write",
-							description: "Write content to a memory file",
-							parameters: {
-								type: "object",
-								properties: {
-									path: { type: "string", description: "Relative path" },
-									content: { type: "string", description: "Content to append" },
-								},
-								required: ["path", "content"],
+			const response = await this.llmClient.complete([{ role: "user", content: flushPrompt }], {
+				systemPrompt: flushSystemPrompt,
+				tools: [
+					{
+						name: "memory_write",
+						description: "Write content to a memory file",
+						parameters: {
+							type: "object",
+							properties: {
+								path: { type: "string", description: "Relative path" },
+								content: { type: "string", description: "Content to append" },
 							},
+							required: ["path", "content"],
 						},
-					],
-					temperature: 0,
-				},
-			);
+					},
+				],
+				temperature: 0,
+			});
 
 			// Execute any memory_write tool calls
-			const toolCalls = response.contentBlocks.filter(
-				(b): b is ToolCallContent => b.type === "tool_call",
-			);
+			const toolCalls = response.contentBlocks.filter((b): b is ToolCallContent => b.type === "tool_call");
 
 			for (const call of toolCalls) {
 				if (call.name === "memory_write") {

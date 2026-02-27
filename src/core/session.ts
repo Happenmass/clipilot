@@ -1,11 +1,10 @@
-import { readFile, writeFile, mkdir } from "node:fs/promises";
-import { join } from "node:path";
 import { randomUUID } from "node:crypto";
+import { mkdir, readFile, writeFile } from "node:fs/promises";
+import { join } from "node:path";
 import { getSessionsDir } from "../utils/config.js";
-import type { TaskGraph } from "./task.js";
 import type { LogEntry } from "../utils/logger.js";
 
-export type SessionStatus = "planning" | "executing" | "paused" | "completed" | "failed" | "aborted";
+export type SessionStatus = "executing" | "paused" | "completed" | "failed" | "aborted";
 
 export interface SessionData {
 	id: string;
@@ -13,7 +12,7 @@ export interface SessionData {
 	status: SessionStatus;
 	agentType: string;
 	autonomyLevel: string;
-	taskGraph: ReturnType<TaskGraph["toJSON"]>;
+	summary?: string;
 	logs: LogEntry[];
 	startedAt: number;
 	updatedAt: number;
@@ -26,7 +25,7 @@ export class Session {
 	status: SessionStatus;
 	agentType: string;
 	autonomyLevel: string;
-	taskGraph: TaskGraph | null = null;
+	summary?: string;
 	logs: LogEntry[] = [];
 	startedAt: number;
 	updatedAt: number;
@@ -35,7 +34,7 @@ export class Session {
 	constructor(goal: string, agentType: string, autonomyLevel: string) {
 		this.id = randomUUID().split("-")[0];
 		this.goal = goal;
-		this.status = "planning";
+		this.status = "executing";
 		this.agentType = agentType;
 		this.autonomyLevel = autonomyLevel;
 		this.startedAt = Date.now();
@@ -67,7 +66,7 @@ export class Session {
 			status: this.status,
 			agentType: this.agentType,
 			autonomyLevel: this.autonomyLevel,
-			taskGraph: this.taskGraph?.toJSON() || { tasks: [] },
+			summary: this.summary,
 			logs: this.logs,
 			startedAt: this.startedAt,
 			updatedAt: this.updatedAt,
@@ -84,15 +83,14 @@ export class Session {
 		const raw = await readFile(filePath, "utf-8");
 		const data: SessionData = JSON.parse(raw);
 
-		const { TaskGraph } = await import("./task.js");
 		const session = new Session(data.goal, data.agentType, data.autonomyLevel);
 		session.id = data.id;
 		session.status = data.status;
+		session.summary = data.summary;
 		session.logs = data.logs;
 		session.startedAt = data.startedAt;
 		session.updatedAt = data.updatedAt;
 		session.completedAt = data.completedAt;
-		session.taskGraph = TaskGraph.fromJSON(data.taskGraph as any);
 
 		return session;
 	}

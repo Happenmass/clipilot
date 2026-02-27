@@ -1,27 +1,25 @@
-import { TUIRenderer } from "./components/renderer.js";
-import { Dashboard } from "./dashboard.js";
-import { ConfigView } from "./config-view.js";
-import type { Scheduler } from "../core/scheduler.js";
-import type { TaskGraph } from "../core/task.js";
+import type { MainAgent } from "../core/main-agent.js";
+import type { SignalRouter } from "../core/signal-router.js";
 import type { TmuxBridge } from "../tmux/bridge.js";
 import { loadConfig, saveConfig } from "../utils/config.js";
-import { logger } from "../utils/logger.js";
+import { TUIRenderer } from "./components/renderer.js";
+import { ConfigView } from "./config-view.js";
+import { Dashboard } from "./dashboard.js";
 
 export class AppTUI {
 	private renderer: TUIRenderer;
 	private dashboard: Dashboard;
-	private scheduler: Scheduler;
-	private bridge: TmuxBridge;
+	private signalRouter: SignalRouter;
+	private mainAgent: MainAgent;
 	private refreshTimer: ReturnType<typeof setInterval> | null = null;
-	private activePaneTarget: string | null = null;
 	private configOverlayActive = false;
 	private configView: ConfigView | null = null;
 
-	constructor(scheduler: Scheduler, bridge: TmuxBridge, goal: string) {
+	constructor(signalRouter: SignalRouter, mainAgent: MainAgent, _bridge: TmuxBridge, goal: string) {
 		this.renderer = new TUIRenderer();
 		this.dashboard = new Dashboard();
-		this.scheduler = scheduler;
-		this.bridge = bridge;
+		this.signalRouter = signalRouter;
+		this.mainAgent = mainAgent;
 
 		this.dashboard.setGoal(goal);
 		this.renderer.setRoot(this.dashboard);
@@ -36,7 +34,6 @@ export class AppTUI {
 		// Refresh agent preview periodically
 		this.refreshTimer = setInterval(() => {
 			this.refreshAgentPreview();
-			this.refreshTaskList();
 			this.renderer.requestRender();
 		}, 2000);
 	}
@@ -50,43 +47,27 @@ export class AppTUI {
 	}
 
 	private setupEventListeners(): void {
-		this.scheduler.on("task_start", (task) => {
-			this.dashboard.addLog(`Starting: ${task.title}`, "info");
-			this.refreshTaskList();
+		this.mainAgent.on("goal_start", (goal) => {
+			this.dashboard.addLog(`▶ Goal: ${goal}`, "info");
 			this.renderer.requestRender();
 		});
 
-		this.scheduler.on("task_complete", (task) => {
-			this.dashboard.addLog(`Completed: ${task.title}`, "info");
-			this.refreshTaskList();
+		this.mainAgent.on("goal_complete", (result) => {
+			this.dashboard.addLog(`✓ Goal completed: ${result.summary}`, "info");
 			this.renderer.requestRender();
 		});
 
-		this.scheduler.on("task_failed", (task, error) => {
-			this.dashboard.addLog(`Failed: ${task.title} — ${error}`, "error");
-			this.refreshTaskList();
+		this.mainAgent.on("goal_failed", (error) => {
+			this.dashboard.addLog(`✗ Goal failed: ${error}`, "error");
 			this.renderer.requestRender();
 		});
 
-		this.scheduler.on("need_human", (task, reason) => {
-			this.dashboard.addLog(`Needs attention: ${task.title} — ${reason}`, "warn");
+		this.mainAgent.on("need_human", (reason) => {
+			this.dashboard.addLog(`⚠ Needs attention: ${reason}`, "warn");
 			this.renderer.requestRender();
 		});
 
-		this.scheduler.on("state_update", (analysis, task) => {
-			if (analysis.status !== "active") {
-				this.dashboard.addLog(`[${task.title}] ${analysis.detail}`);
-				this.renderer.requestRender();
-			}
-		});
-
-		this.scheduler.on("all_complete", (progress) => {
-			this.dashboard.addLog(`All complete: ${progress.completed}/${progress.total} succeeded`);
-			this.refreshTaskList();
-			this.renderer.requestRender();
-		});
-
-		this.scheduler.on("log", (message) => {
+		this.mainAgent.on("log", (message) => {
 			this.dashboard.addLog(message);
 			this.renderer.requestRender();
 		});
@@ -103,17 +84,17 @@ export class AppTUI {
 
 			switch (data) {
 				case "q":
-					this.scheduler.abort();
+					this.signalRouter.abort();
 					this.stop();
 					process.exit(0);
 					break;
 
 				case "p":
-					if (this.scheduler.isPaused()) {
-						this.scheduler.resume();
+					if (this.signalRouter.isPaused()) {
+						this.signalRouter.resume();
 						this.dashboard.addLog("Resumed");
 					} else {
-						this.scheduler.pause();
+						this.signalRouter.pause();
 						this.dashboard.addLog("Paused");
 					}
 					this.renderer.requestRender();
@@ -161,18 +142,7 @@ export class AppTUI {
 		this.renderer.requestRender();
 	}
 
-	private refreshTaskList(): void {
-		const graph = this.scheduler.getTaskGraph();
-		this.dashboard.setTasks(graph.getAllTasks());
-		this.dashboard.setProgress(graph.getProgress());
-	}
-
 	private async refreshAgentPreview(): Promise<void> {
 		// TODO: Capture active agent pane and update preview
-		// This will be connected when scheduler tracks active pane targets
-	}
-
-	setActivePaneTarget(target: string | null): void {
-		this.activePaneTarget = target;
 	}
 }

@@ -1,90 +1,30 @@
 #!/usr/bin/env node
 
-import { execFile } from "node:child_process";
-import { promisify } from "node:util";
+import { join } from "node:path";
 import chalk from "chalk";
 import type { AgentAdapter } from "./agents/adapter.js";
 import { ClaudeCodeAdapter } from "./agents/claude-code.js";
 import { parseCliArgs, printHelp, printVersion } from "./cli.js";
-import { join } from "node:path";
 import { ContextManager } from "./core/context-manager.js";
 import { MainAgent } from "./core/main-agent.js";
-import { Planner } from "./core/planner.js";
-import { Scheduler } from "./core/scheduler.js";
 import { Session } from "./core/session.js";
 import { SignalRouter } from "./core/signal-router.js";
+import { runDoctor } from "./doctor/run.js";
 import { LLMClient } from "./llm/client.js";
 import { PromptLoader } from "./llm/prompt-loader.js";
 import { getAllProviders } from "./llm/providers/registry.js";
 import { createEmbeddingProvider } from "./memory/embedder.js";
 import { MemoryStore } from "./memory/store.js";
 import { syncMemoryFiles } from "./memory/sync.js";
+import { discoverSkills } from "./skills/discovery.js";
+import { filterSkills } from "./skills/filter.js";
+import { buildCapabilitiesSummary } from "./skills/injector.js";
+import { SkillRegistry } from "./skills/registry.js";
 import { TmuxBridge } from "./tmux/bridge.js";
 import { StateDetector } from "./tmux/state-detector.js";
-import { runDoctor } from "./doctor/run.js";
 import { runConfigTUI } from "./tui/config-app.js";
 import { ensureConfigDir, loadConfig } from "./utils/config.js";
 import { logger } from "./utils/logger.js";
-
-const execFileAsync = promisify(execFile);
-
-async function gatherProjectContext(
-	cwd: string,
-): Promise<{ projectInfo?: string; fileTree?: string; recentGitLog?: string }> {
-	const context: { projectInfo?: string; fileTree?: string; recentGitLog?: string } = {};
-
-	// Try to read README
-	try {
-		const { readFile } = await import("node:fs/promises");
-		const { join } = await import("node:path");
-		const readme = await readFile(join(cwd, "README.md"), "utf-8");
-		context.projectInfo = readme.substring(0, 2000);
-	} catch {
-		// No README
-	}
-
-	// Try to get file tree
-	try {
-		const { stdout } = await execFileAsync(
-			"find",
-			[
-				cwd,
-				"-type",
-				"f",
-				"-not",
-				"-path",
-				"*/node_modules/*",
-				"-not",
-				"-path",
-				"*/.git/*",
-				"-not",
-				"-path",
-				"*/dist/*",
-			],
-			{
-				timeout: 5000,
-				maxBuffer: 1024 * 100,
-			},
-		);
-		const files = stdout.trim().split("\n").slice(0, 50);
-		context.fileTree = files.map((f) => f.replace(cwd, ".")).join("\n");
-	} catch {
-		// Ignore
-	}
-
-	// Try to get git log
-	try {
-		const { stdout } = await execFileAsync("git", ["log", "--oneline", "-10"], {
-			cwd,
-			timeout: 5000,
-		});
-		context.recentGitLog = stdout.trim();
-	} catch {
-		// Not a git repo
-	}
-
-	return context;
-}
 
 async function main(): Promise<void> {
 	const args = parseCliArgs();
@@ -137,7 +77,8 @@ async function main(): Promise<void> {
 		process.exit(0);
 	}
 
-	// Initialize
+	// ─── Phase 1: Bootstrap ──────────────────────────────
+
 	await ensureConfigDir();
 	await logger.init();
 
@@ -232,7 +173,6 @@ async function main(): Promise<void> {
 	console.log();
 
 	// Initialize components
-	const planner = new Planner(llmClient, promptLoader);
 	const stateDetector = new StateDetector(bridge, llmClient, config.stateDetector, promptLoader);
 
 	// Setup agent adapters
@@ -243,37 +183,7 @@ async function main(): Promise<void> {
 	// Create session
 	const session = new Session(goal, args.agent, args.autonomy);
 
-	// Phase 1: Planning
-	console.log(chalk.cyan("Planning..."));
-	logger.info("main", `Planning for: ${goal}`);
-
-	const projectContext = await gatherProjectContext(args.cwd);
-	const taskGraph = await planner.plan(goal, projectContext);
-
-	session.taskGraph = taskGraph;
-	session.setStatus("planning");
-
-	const progress = taskGraph.getProgress();
-	console.log(chalk.green(`Plan ready: ${progress.total} tasks\n`));
-
-	// Display plan
-	for (const task of taskGraph.getAllTasks()) {
-		const deps = task.dependencies.length > 0 ? chalk.dim(` (depends: ${task.dependencies.join(", ")})`) : "";
-		console.log(`  ${chalk.dim(`${task.id}.`)} ${task.title}${deps}`);
-	}
-	console.log();
-
-	if (args.dryRun) {
-		console.log(chalk.yellow("(dry-run mode — not executing)"));
-		await session.save();
-		return;
-	}
-
-	// Phase 2: Execution
-	console.log(chalk.cyan("Executing...\n"));
-	session.setStatus("executing");
-
-	// Initialize MainAgent and its dependencies
+	// Initialize ContextManager
 	const contextManager = new ContextManager({
 		llmClient,
 		promptLoader,
@@ -282,21 +192,35 @@ async function main(): Promise<void> {
 	});
 	contextManager.updateModule("goal", goal);
 
-	const signalRouter = new SignalRouter(stateDetector, bridge, contextManager, taskGraph);
+	// Initialize Skill System: discover → filter → inject → registry
+	const adapterSkillsDir = defaultAdapter.getSkillsDir?.();
+	const discoveredSkills = await discoverSkills({
+		adapterSkillsDir,
+		workspaceDir: args.cwd,
+	});
+	const filteredSkills = filterSkills(discoveredSkills, { disabled: config.skills?.disabled }, args.cwd);
+	const baseCapabilities =
+		defaultAdapter.getBaseCapabilities?.() || "Direct code editing and file operations\nRunning terminal commands";
+	const capabilitiesSummary = buildCapabilitiesSummary(baseCapabilities, filteredSkills);
+	contextManager.updateModule("agent_capabilities", capabilitiesSummary);
+	const skillRegistry = new SkillRegistry(filteredSkills);
+	logger.info("main", `Skills loaded: ${skillRegistry.size} (${filteredSkills.map((s) => s.name).join(", ")})`);
+
+	// Initialize SignalRouter and MainAgent
+	const signalRouter = new SignalRouter(stateDetector, bridge, contextManager);
 
 	const defaultAgentAdapter = agents.get(args.agent) ?? defaultAdapter;
 	const mainAgent = new MainAgent({
 		contextManager,
 		signalRouter,
 		llmClient,
-		planner,
 		adapter: defaultAgentAdapter,
 		bridge,
 		stateDetector,
-		taskGraph,
 		goal,
 		memoryStore,
 		embeddingProvider,
+		skillRegistry,
 		searchConfig: {
 			vectorWeight: config.memory.vectorWeight,
 			textWeight: 1 - config.memory.vectorWeight,
@@ -307,72 +231,57 @@ async function main(): Promise<void> {
 		},
 	});
 
-	const scheduler = new Scheduler(
-		taskGraph,
-		bridge,
-		stateDetector,
-		mainAgent,
-		agents,
-		{
-			maxParallel: 1,
-			autonomyLevel: args.autonomy,
-			defaultAgent: args.agent,
-			goal,
-		},
-	);
-
 	// Log events
-	scheduler.on("task_start", (task) => {
-		console.log(chalk.blue(`▶ Starting: ${task.title}`));
+	mainAgent.on("goal_start", (g) => {
+		console.log(chalk.cyan(`▶ Goal: ${g}`));
 	});
 
-	scheduler.on("task_complete", (task, _result) => {
-		console.log(chalk.green(`✓ Completed: ${task.title}`));
-	});
-
-	scheduler.on("task_failed", (task, error) => {
-		console.log(chalk.red(`✗ Failed: ${task.title} — ${error}`));
-	});
-
-	scheduler.on("need_human", (task, reason) => {
-		console.log(chalk.yellow(`⚠ Needs attention: ${task.title} — ${reason}`));
-	});
-
-	scheduler.on("all_complete", (finalProgress) => {
+	mainAgent.on("goal_complete", (result) => {
 		console.log();
-		console.log(chalk.bold("Execution complete:"));
-		console.log(`  Completed: ${finalProgress.completed}/${finalProgress.total}`);
-		if (finalProgress.failed > 0) {
-			console.log(chalk.red(`  Failed: ${finalProgress.failed}`));
-		}
-		if (finalProgress.skipped > 0) {
-			console.log(chalk.yellow(`  Skipped: ${finalProgress.skipped}`));
-		}
+		console.log(chalk.green(`✓ Goal completed: ${result.summary}`));
+	});
+
+	mainAgent.on("goal_failed", (error) => {
+		console.log(chalk.red(`✗ Goal failed: ${error}`));
+	});
+
+	mainAgent.on("need_human", (reason) => {
+		console.log(chalk.yellow(`⚠ Needs attention: ${reason}`));
+	});
+
+	mainAgent.on("log", (message) => {
+		console.log(chalk.dim(`  ${message}`));
 	});
 
 	// Handle Ctrl+C
 	process.on("SIGINT", async () => {
 		console.log(chalk.yellow("\nAborting..."));
-		scheduler.abort();
+		signalRouter.abort();
 		session.setStatus("aborted");
 		await session.save();
 		process.exit(0);
 	});
 
-	await scheduler.start();
+	// ─── Phase 2: Execution ──────────────────────────────
 
-	// Session summary: extract lessons learned via LLM, persist to memory
+	console.log(chalk.cyan("Executing...\n"));
+
+	if (args.dryRun) {
+		console.log(chalk.yellow("(dry-run mode — not executing)"));
+		await session.save();
+		return;
+	}
+
+	const goalResult = await mainAgent.executeGoal(goal);
+
+	// ─── Phase 3: Summary ────────────────────────────────
+
 	try {
-		const allTasks = taskGraph.getAllTasks();
-		const taskSummary = allTasks
-			.map((t) => `- [${t.status}] ${t.title}: ${t.result?.summary || "no result"}`)
-			.join("\n");
-
 		const summaryResponse = await llmClient.complete(
 			[
 				{
 					role: "user",
-					content: `Goal: ${goal}\n\nTask execution history:\n${taskSummary}`,
+					content: `Goal: ${goal}\n\nResult: ${goalResult.success ? "SUCCESS" : "FAILED"}\nSummary: ${goalResult.summary}${goalResult.errors?.length ? `\nErrors: ${goalResult.errors.join(", ")}` : ""}`,
 				},
 			],
 			{
@@ -397,7 +306,8 @@ async function main(): Promise<void> {
 	memoryStore.close();
 
 	// Save session
-	session.setStatus(taskGraph.getProgress().failed > 0 ? "failed" : "completed");
+	session.summary = goalResult.summary;
+	session.setStatus(goalResult.success ? "completed" : "failed");
 	const sessionPath = await session.save();
 	logger.info("main", `Session saved: ${sessionPath}`);
 }

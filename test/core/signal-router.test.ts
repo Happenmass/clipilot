@@ -8,7 +8,9 @@ function createMockStateDetector() {
 	return {
 		onStateChange: vi.fn((cb: any) => {
 			callback = cb;
-			return () => { callback = null; };
+			return () => {
+				callback = null;
+			};
 		}),
 		startMonitoring: vi.fn(),
 		stopMonitoring: vi.fn(),
@@ -32,78 +34,52 @@ function createMockContextManager() {
 	} as any;
 }
 
-function createMockTaskGraph() {
-	return {
-		updateStatus: vi.fn(),
-		getProgress: vi.fn().mockReturnValue({ total: 3, completed: 1 }),
-	} as any;
-}
-
 describe("SignalRouter", () => {
 	let router: SignalRouter;
 	let mockDetector: ReturnType<typeof createMockStateDetector>;
 	let mockBridge: ReturnType<typeof createMockBridge>;
 	let mockCtx: ReturnType<typeof createMockContextManager>;
-	let mockGraph: ReturnType<typeof createMockTaskGraph>;
 
 	beforeEach(() => {
 		mockDetector = createMockStateDetector();
 		mockBridge = createMockBridge();
 		mockCtx = createMockContextManager();
-		mockGraph = createMockTaskGraph();
-		router = new SignalRouter(mockDetector as any, mockBridge, mockCtx, mockGraph);
+		router = new SignalRouter(mockDetector as any, mockBridge, mockCtx);
 	});
 
 	describe("signal routing", () => {
 		it("should route active with high confidence to fast path (no handler call for active)", async () => {
 			const handler = vi.fn();
 			router.onSignal(handler);
-			router.startMonitoring("test:0.0", "task context");
+			router.startMonitoring("test:0.0", "goal context");
 
 			mockDetector._emit({ status: "active", confidence: 0.8, detail: "Working" }, "spinner output");
 
-			// Give async handler time to complete
 			await new Promise((r) => setTimeout(r, 10));
 
 			// Active fast path does NOT call the signal handler
 			expect(handler).not.toHaveBeenCalled();
 		});
 
-		it("should route completed with high confidence to fast path", async () => {
+		it("should route completed to DECISION_NEEDED (let LLM decide)", async () => {
 			const handler = vi.fn();
 			router.onSignal(handler);
-			router.startMonitoring("test:0.0", "task context");
+			router.startMonitoring("test:0.0", "goal context");
 
 			mockDetector._emit({ status: "completed", confidence: 0.92, detail: "Done" }, "> ");
 
 			await new Promise((r) => setTimeout(r, 10));
 
-			expect(handler).toHaveBeenCalledWith(
-				expect.objectContaining({ type: "NOTIFY" }),
-			);
-			expect(mockCtx.addMessage).toHaveBeenCalledWith(
-				expect.objectContaining({ content: expect.stringContaining("[NOTIFY]") }),
-			);
-		});
-
-		it("should route completed with low confidence to MainAgent", async () => {
-			const handler = vi.fn();
-			router.onSignal(handler);
-			router.startMonitoring("test:0.0", "task context");
-
-			mockDetector._emit({ status: "completed", confidence: 0.7, detail: "Maybe done" }, "> ");
-
-			await new Promise((r) => setTimeout(r, 10));
-
+			// In goal-driven mode, all non-active states go to DECISION_NEEDED
 			expect(handler).toHaveBeenCalledWith(
 				expect.objectContaining({ type: "DECISION_NEEDED" }),
 			);
 		});
 
-		it("should route waiting_input to MainAgent", async () => {
+		it("should route waiting_input to DECISION_NEEDED", async () => {
 			const handler = vi.fn();
 			router.onSignal(handler);
-			router.startMonitoring("test:0.0", "task context");
+			router.startMonitoring("test:0.0", "goal context");
 
 			mockDetector._emit({ status: "waiting_input", confidence: 0.6, detail: "Waiting" }, "(y/n)");
 
@@ -114,10 +90,10 @@ describe("SignalRouter", () => {
 			);
 		});
 
-		it("should route error to MainAgent", async () => {
+		it("should route error to DECISION_NEEDED", async () => {
 			const handler = vi.fn();
 			router.onSignal(handler);
-			router.startMonitoring("test:0.0", "task context");
+			router.startMonitoring("test:0.0", "goal context");
 
 			mockDetector._emit({ status: "error", confidence: 0.9, detail: "Error found" }, "Error: ...");
 
@@ -128,10 +104,10 @@ describe("SignalRouter", () => {
 			);
 		});
 
-		it("should route idle to MainAgent", async () => {
+		it("should route idle to DECISION_NEEDED", async () => {
 			const handler = vi.fn();
 			router.onSignal(handler);
-			router.startMonitoring("test:0.0", "task context");
+			router.startMonitoring("test:0.0", "goal context");
 
 			mockDetector._emit({ status: "idle", confidence: 0.5, detail: "Idle" }, "> ");
 
@@ -140,6 +116,36 @@ describe("SignalRouter", () => {
 			expect(handler).toHaveBeenCalledWith(
 				expect.objectContaining({ type: "DECISION_NEEDED" }),
 			);
+		});
+	});
+
+	describe("execution control", () => {
+		it("should track pause state", () => {
+			expect(router.isPaused()).toBe(false);
+			router.pause();
+			expect(router.isPaused()).toBe(true);
+			router.resume();
+			expect(router.isPaused()).toBe(false);
+		});
+
+		it("should track abort state", () => {
+			expect(router.isAborted()).toBe(false);
+			router.abort();
+			expect(router.isAborted()).toBe(true);
+		});
+
+		it("should emit log events on pause/resume/abort", () => {
+			const logSpy = vi.fn();
+			router.on("log", logSpy);
+
+			router.pause();
+			expect(logSpy).toHaveBeenCalledWith("Execution paused");
+
+			router.resume();
+			expect(logSpy).toHaveBeenCalledWith("Execution resumed");
+
+			router.abort();
+			expect(logSpy).toHaveBeenCalledWith("Execution aborted");
 		});
 	});
 
@@ -158,11 +164,11 @@ describe("SignalRouter", () => {
 			expect(router.getCaptureLines("reading proposal.md")).toBe(300);
 		});
 
-		it("should reset to default on new task", () => {
+		it("should reset to default on resetCaptureExpansion", () => {
 			router.notifyPromptSent("/opsx:ff test");
 			expect(router.getCaptureLines()).toBe(300);
 
-			router.notifyNewTask();
+			router.resetCaptureExpansion();
 			expect(router.getCaptureLines()).toBe(50);
 		});
 

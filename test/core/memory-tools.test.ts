@@ -1,6 +1,5 @@
 import { describe, it, expect, beforeEach, vi, afterEach } from "vitest";
 import { MainAgent } from "../../src/core/main-agent.js";
-import { TaskGraph } from "../../src/core/task.js";
 import { mkdtemp, mkdir, writeFile, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -36,8 +35,11 @@ function createMockSignalRouter() {
 		startMonitoring: vi.fn(),
 		stopMonitoring: vi.fn(),
 		notifyPromptSent: vi.fn(),
-		notifyNewTask: vi.fn(),
-		setTaskGraph: vi.fn(),
+		resetCaptureExpansion: vi.fn(),
+		isPaused: vi.fn().mockReturnValue(false),
+		isAborted: vi.fn().mockReturnValue(false),
+		emit: vi.fn(),
+		on: vi.fn(),
 	} as any;
 }
 
@@ -58,7 +60,6 @@ function createMinimalMocks() {
 		adapter: { sendPrompt: vi.fn(), sendResponse: vi.fn(), abort: vi.fn(), getCharacteristics: vi.fn().mockReturnValue({}) } as any,
 		bridge: { capturePane: vi.fn() } as any,
 		stateDetector: { setCooldown: vi.fn(), startMonitoring: vi.fn(), stopMonitoring: vi.fn(), onStateChange: vi.fn() } as any,
-		planner: { replan: vi.fn() } as any,
 	};
 }
 
@@ -74,17 +75,14 @@ function createMockMemoryStore(workspaceDir: string) {
 
 function createAgent(opts: { memoryStore?: any; embeddingProvider?: any } = {}) {
 	const mocks = createMinimalMocks();
-	const taskGraph = new TaskGraph();
 
 	return new MainAgent({
 		contextManager: createMockContextManager(),
 		signalRouter: createMockSignalRouter(),
 		llmClient: createMockLLMClient(),
-		planner: mocks.planner,
 		adapter: mocks.adapter,
 		bridge: mocks.bridge,
 		stateDetector: mocks.stateDetector,
-		taskGraph,
 		goal: "test",
 		memoryStore: opts.memoryStore,
 		embeddingProvider: opts.embeddingProvider,
