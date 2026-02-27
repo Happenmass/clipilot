@@ -221,6 +221,7 @@ async function main(): Promise<void> {
 		memoryStore,
 		embeddingProvider,
 		skillRegistry,
+		debug: config.debug,
 		searchConfig: {
 			vectorWeight: config.memory.vectorWeight,
 			textWeight: 1 - config.memory.vectorWeight,

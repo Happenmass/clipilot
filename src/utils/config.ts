@@ -56,6 +56,7 @@ export interface SkillsConfig {
 export interface CLIPilotConfig {
 	defaultAgent: string;
 	autonomyLevel: string;
+	debug: boolean;
 	llm: LLMConfig;
 	providers?: ProviderKeyConfig;
 	stateDetector: StateDetectorConfig;
@@ -70,6 +71,7 @@ const CONFIG_FILE = join(CONFIG_DIR, "config.json");
 const DEFAULT_CONFIG: CLIPilotConfig = {
 	defaultAgent: "claude-code",
 	autonomyLevel: "medium",
+	debug: false,
 	llm: {
 		provider: "anthropic",
 		model: "claude-sonnet-4-5-20250929",
