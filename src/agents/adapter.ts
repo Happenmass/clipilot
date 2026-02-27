@@ -55,4 +55,10 @@ export interface AgentAdapter {
 
 	/** Get agent-specific characteristics for state detection */
 	getCharacteristics(): AgentCharacteristics;
+
+	/** Return the absolute path to this adapter's bundled skills directory */
+	getSkillsDir?(): string;
+
+	/** Return a text description of the adapter's base capabilities (non-skill) */
+	getBaseCapabilities?(): string;
 }

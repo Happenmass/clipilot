@@ -1,3 +1,5 @@
+import { dirname, join } from "node:path";
+import { fileURLToPath } from "node:url";
 import type { TmuxBridge } from "../tmux/bridge.js";
 import { logger } from "../utils/logger.js";
 import type { AgentAdapter, AgentCharacteristics, LaunchOptions } from "./adapter.js";
@@ -119,6 +121,15 @@ export class ClaudeCodeAdapter implements AgentAdapter {
 		await sleep(200);
 		// Double escape to ensure we're back to input
 		await bridge.sendEscape(paneTarget);
+	}
+
+	getSkillsDir(): string {
+		const thisDir = dirname(fileURLToPath(import.meta.url));
+		return join(thisDir, "..", "agents", "claude-code-skills");
+	}
+
+	getBaseCapabilities(): string {
+		return "Direct code editing and file operations\nRunning terminal commands";
 	}
 
 	getCharacteristics(): AgentCharacteristics {

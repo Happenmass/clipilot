@@ -48,6 +48,11 @@ export interface MemoryConfig {
 	flushThreshold: number;
 }
 
+export interface SkillsConfig {
+	/** Skill names to disable (won't be loaded even if discovered) */
+	disabled: string[];
+}
+
 export interface CLIPilotConfig {
 	defaultAgent: string;
 	autonomyLevel: string;
@@ -56,6 +61,7 @@ export interface CLIPilotConfig {
 	stateDetector: StateDetectorConfig;
 	tmux: TmuxConfig;
 	memory: MemoryConfig;
+	skills: SkillsConfig;
 }
 
 const CONFIG_DIR = join(homedir(), ".clipilot");
@@ -85,6 +91,9 @@ const DEFAULT_CONFIG: CLIPilotConfig = {
 		topK: 10,
 		decayHalfLifeDays: 30,
 		flushThreshold: 0.6,
+	},
+	skills: {
+		disabled: [],
 	},
 };
 
@@ -117,6 +126,7 @@ export async function loadConfig(): Promise<CLIPilotConfig> {
 			stateDetector: { ...DEFAULT_CONFIG.stateDetector, ...userConfig.stateDetector },
 			tmux: { ...DEFAULT_CONFIG.tmux, ...userConfig.tmux },
 			memory: { ...DEFAULT_CONFIG.memory, ...userConfig.memory },
+			skills: { ...DEFAULT_CONFIG.skills, ...userConfig.skills },
 		};
 	} catch {
 		return { ...DEFAULT_CONFIG };
