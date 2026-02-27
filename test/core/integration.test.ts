@@ -83,7 +83,12 @@ function createMockStateDetector() {
 	const callbacks: Array<(analysis: any, content: string) => void> = [];
 	return {
 		setCharacteristics: vi.fn(),
-		setCooldown: vi.fn(),
+		captureHash: vi.fn().mockResolvedValue("mock-pre-hash"),
+		waitForSettled: vi.fn().mockResolvedValue({
+			analysis: { status: "completed", confidence: 0.9, detail: "Agent finished" },
+			content: "> task done",
+			timedOut: false,
+		}),
 		onStateChange: vi.fn((cb: any) => {
 			callbacks.push(cb);
 			return () => {
@@ -95,6 +100,7 @@ function createMockStateDetector() {
 		stopMonitoring: vi.fn(),
 		analyzeState: vi.fn(),
 		deepAnalyze: vi.fn(),
+		quickPatternCheck: vi.fn().mockReturnValue(null),
 		_callbacks: callbacks,
 	} as any;
 }
@@ -134,12 +140,11 @@ describe("Integration: Goal-driven execution end-to-end", () => {
 		stateDetector = createMockStateDetector();
 	});
 
-	it("should complete a goal via create_session → send_to_agent → signal → mark_complete", async () => {
+	it("should complete a goal via create_session → send_to_agent (blocking) → mark_complete", async () => {
 		const llmClient = createMockLLMClient([
 			toolCall("tc0", "create_session", {}),
 			toolCall("tc1", "send_to_agent", { prompt: "Implement the feature" }),
-			endTurn("Waiting for agent"),
-			// After signal injection, LLM decides the goal is complete
+			// send_to_agent now blocks and returns content — LLM sees result and completes
 			toolCall("tc2", "mark_complete", { summary: "Feature implemented successfully" }),
 		]);
 
@@ -162,24 +167,19 @@ describe("Integration: Goal-driven execution end-to-end", () => {
 		mainAgent.on("goal_start", (g) => events.push(`start:${g}`));
 		mainAgent.on("goal_complete", (r) => events.push(`complete:${r.summary}`));
 
-		const resultPromise = mainAgent.executeGoal("Build a feature");
-		await new Promise((r) => setTimeout(r, 100));
-
-		// Simulate signal from StateDetector (completed state → DECISION_NEEDED)
-		for (const cb of stateDetector._callbacks) {
-			cb(
-				{ status: "completed", confidence: 0.95, detail: "Agent finished the task" },
-				"> ",
-			);
-		}
-
-		const result = await resultPromise;
+		const result = await mainAgent.executeGoal("Build a feature");
 
 		expect(result.success).toBe(true);
 		expect(result.summary).toBe("Feature implemented successfully");
 		expect(adapter.launch).toHaveBeenCalledTimes(1);
 		expect(adapter.sendPrompt).toHaveBeenCalledWith(bridge, "test-session:0.0", "Implement the feature");
-		expect(stateDetector.setCooldown).toHaveBeenCalledWith(3000);
+		// send_to_agent should call captureHash before sending and waitForSettled after
+		expect(stateDetector.captureHash).toHaveBeenCalled();
+		expect(stateDetector.waitForSettled).toHaveBeenCalledWith(
+			"test-session:0.0",
+			"Build a feature",
+			expect.objectContaining({ preHash: "mock-pre-hash" }),
+		);
 		expect(events).toContain("start:Build a feature");
 		expect(events).toContain("complete:Feature implemented successfully");
 	});
@@ -207,13 +207,12 @@ describe("Integration: Goal-driven execution end-to-end", () => {
 		expect(result.summary).toBe("Goal achieved directly");
 	});
 
-	it("should handle multi-step tool use: create_session → fetch_more → send_to_agent → monitor → complete", async () => {
+	it("should handle multi-step tool use: create_session → fetch_more → send_to_agent (blocking) → complete", async () => {
 		const llmClient = createMockLLMClient([
 			toolCall("tc0", "create_session", {}),
 			toolCall("tc1", "fetch_more", { lines: 200 }),
 			toolCall("tc2", "send_to_agent", { prompt: "Fix the bug based on the error I see" }),
-			endTurn("Monitoring agent..."),
-			// After signal injection
+			// send_to_agent blocks and returns content — LLM completes directly
 			toolCall("tc3", "mark_complete", { summary: "Bug fixed" }),
 		]);
 
@@ -229,18 +228,7 @@ describe("Integration: Goal-driven execution end-to-end", () => {
 			goal: "Fix bugs",
 		});
 
-		const resultPromise = mainAgent.executeGoal("Fix bugs");
-		await new Promise((r) => setTimeout(r, 100));
-
-		// Simulate completion from StateDetector
-		for (const cb of stateDetector._callbacks) {
-			cb(
-				{ status: "completed", confidence: 0.95, detail: "Bug fixed" },
-				"> ",
-			);
-		}
-
-		const result = await resultPromise;
+		const result = await mainAgent.executeGoal("Fix bugs");
 
 		expect(result.success).toBe(true);
 		expect(result.summary).toBe("Bug fixed");
@@ -250,6 +238,7 @@ describe("Integration: Goal-driven execution end-to-end", () => {
 			"test-session:0.0",
 			"Fix the bug based on the error I see",
 		);
+		expect(stateDetector.waitForSettled).toHaveBeenCalled();
 	});
 
 	it("should handle goal failure via mark_failed tool", async () => {

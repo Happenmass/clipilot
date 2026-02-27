@@ -93,11 +93,17 @@ function createMockBridge() {
 
 function createMockStateDetector() {
 	return {
-		setCooldown: vi.fn(),
 		setCharacteristics: vi.fn(),
+		captureHash: vi.fn().mockResolvedValue("mock-pre-hash"),
+		waitForSettled: vi.fn().mockResolvedValue({
+			analysis: { status: "completed", confidence: 0.9, detail: "Agent finished" },
+			content: "> task done",
+			timedOut: false,
+		}),
 		startMonitoring: vi.fn(),
 		stopMonitoring: vi.fn(),
 		onStateChange: vi.fn().mockReturnValue(() => {}),
+		quickPatternCheck: vi.fn().mockReturnValue(null),
 	} as any;
 }
 
@@ -279,7 +285,7 @@ describe("MainAgent", () => {
 			expect(result.summary).toBe("Dependency missing");
 		});
 
-		it("should execute send_to_agent and set cooldown", async () => {
+		it("should execute send_to_agent with blocking waitForSettled", async () => {
 			const agent = setupAgent([
 				{
 					content: "",
@@ -322,7 +328,12 @@ describe("MainAgent", () => {
 				"test-session:0.0",
 				"implement feature",
 			);
-			expect(mockDetector.setCooldown).toHaveBeenCalledWith(3000);
+			expect(mockDetector.captureHash).toHaveBeenCalled();
+			expect(mockDetector.waitForSettled).toHaveBeenCalledWith(
+				"test-session:0.0",
+				"Test",
+				expect.objectContaining({ preHash: "mock-pre-hash" }),
+			);
 			expect(mockRouter.notifyPromptSent).toHaveBeenCalledWith("implement feature");
 		});
 

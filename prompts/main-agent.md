@@ -106,6 +106,8 @@ Before sending prompts to the coding agent, ensure a tmux session exists:
 5. **Verify results.** When the agent reports completion, consider sending verification commands (e.g., running tests, checking output) before calling `mark_complete`.
 6. Cross-reference agent output with History and Memory to judge whether results are reasonable.
 7. For `waiting_input` signals, consider whether the requested action aligns with the current goal before responding.
+   - **Prefer low-interaction options.** When the agent presents numbered choices (e.g., permission prompts, confirmation dialogs), prefer the option that suppresses future prompts — typically labeled "Don't ask again", "Always allow", "Yes, and remember", or similar. This is usually the **2nd option** in the list. Selecting it avoids repeated interruptions and keeps execution flowing.
+   - Only fall back to the one-time option (usually option 1) if the permanent option seems risky or unrelated to the current goal.
 8. For complex or high-risk work, use `read_skill` to get detailed instructions for relevant skills, then include skill commands in your prompt.
 9. Prefer `escalate_to_human` over guessing when you are uncertain about a dangerous operation.
 10. Use `memory_search` before making decisions that depend on prior context or project knowledge.

@@ -40,7 +40,7 @@ const TOOL_DEFINITIONS: ToolDefinition[] = [
 	{
 		name: "send_to_agent",
 		description:
-			"Send an instruction prompt to the coding agent. Use this to start a task or give additional instructions.",
+			"Send an instruction prompt to the coding agent and wait for the agent to finish. Returns the agent's final status and pane content. This tool blocks until the agent completes, encounters an error, or times out.",
 		parameters: {
 			type: "object",
 			properties: {
@@ -52,7 +52,7 @@ const TOOL_DEFINITIONS: ToolDefinition[] = [
 	{
 		name: "respond_to_agent",
 		description:
-			"Respond to an agent waiting for input (y/n prompts, menu selections, text input). Formats: 'Enter', 'Escape', 'y', 'n', 'arrow:down:N', 'keys:K1,K2,...', or plain text.",
+			"Respond to an agent waiting for input and wait for the agent to finish. Formats: 'Enter', 'Escape', 'y', 'n', 'arrow:down:N', 'keys:K1,K2,...', or plain text. Returns the agent's final status and pane content after it settles.",
 		parameters: {
 			type: "object",
 			properties: {
@@ -64,7 +64,7 @@ const TOOL_DEFINITIONS: ToolDefinition[] = [
 	{
 		name: "fetch_more",
 		description:
-			"Fetch more lines from the tmux pane to see the full output. Use when the current pane content seems truncated.",
+			"Fetch more lines from the tmux pane to see additional output history. Only use this AFTER the agent has finished working (i.e., after send_to_agent or respond_to_agent has returned), when the returned content is clearly truncated or missing earlier context. Do NOT use this to poll for agent progress.",
 		parameters: {
 			type: "object",
 			properties: {
@@ -489,10 +489,18 @@ export class MainAgent extends EventEmitter<MainAgentEvents> {
 					return { output: "Error: No active session. Call create_session first.", terminal: false };
 				}
 				const prompt = args.prompt as string;
+				const sendPreHash = await this.stateDetector.captureHash(this.paneTarget);
 				await this.adapter.sendPrompt(this.bridge, this.paneTarget, prompt);
-				this.stateDetector.setCooldown(3000);
 				this.signalRouter.notifyPromptSent(prompt);
-				return { output: "Prompt sent to agent.", terminal: false };
+				const sendResult = await this.stateDetector.waitForSettled(this.paneTarget, this.goal, {
+					preHash: sendPreHash,
+					isAborted: () => this.signalRouter.isAborted(),
+				});
+				const sendStatus = sendResult.timedOut ? "timeout" : sendResult.analysis.status;
+				return {
+					output: `[Agent ${sendStatus}] (${sendResult.analysis.detail})\n${sendResult.content}`,
+					terminal: false,
+				};
 			}
 
 			case "respond_to_agent": {
@@ -500,9 +508,17 @@ export class MainAgent extends EventEmitter<MainAgentEvents> {
 					return { output: "Error: No active session. Call create_session first.", terminal: false };
 				}
 				const value = args.value as string;
+				const respondPreHash = await this.stateDetector.captureHash(this.paneTarget);
 				await this.adapter.sendResponse(this.bridge, this.paneTarget, value);
-				this.stateDetector.setCooldown(3000);
-				return { output: `Response "${value}" sent to agent.`, terminal: false };
+				const respondResult = await this.stateDetector.waitForSettled(this.paneTarget, this.goal, {
+					preHash: respondPreHash,
+					isAborted: () => this.signalRouter.isAborted(),
+				});
+				const respondStatus = respondResult.timedOut ? "timeout" : respondResult.analysis.status;
+				return {
+					output: `[Agent ${respondStatus}] (${respondResult.analysis.detail})\n${respondResult.content}`,
+					terminal: false,
+				};
 			}
 
 			case "fetch_more": {

@@ -139,6 +139,7 @@ export class ClaudeCodeAdapter implements AgentAdapter {
 				/\(y\/n\)/i, // Yes/no prompt
 				/Allow/i, // Permission prompt
 				/\?.*:?\s*$/m, // Question prompt
+				/❯\s*\d+\.\s/, // Numbered option menu (e.g. ❯ 1. Yes)
 			],
 			completionPatterns: [
 				/^>\s*$/m, // Back to empty prompt after output

@@ -26,6 +26,18 @@ export interface StateDetectorConfig {
 	captureLines: number;
 }
 
+export interface WaitForSettledOptions {
+	preHash: string;
+	timeoutMs?: number;
+	isAborted?: () => boolean;
+}
+
+export interface SettledResult {
+	analysis: PaneAnalysis;
+	content: string;
+	timedOut: boolean;
+}
+
 type StateChangeCallback = (analysis: PaneAnalysis, paneContent: string) => void;
 
 export class StateDetector {
@@ -41,7 +53,6 @@ export class StateDetector {
 	private lastChangeTime = 0;
 	private lastContent = "";
 	private callbacks: StateChangeCallback[] = [];
-	private cooldownUntil = 0;
 	private analyzing = false;
 
 	constructor(bridge: TmuxBridge, llmClient: LLMClient, config: StateDetectorConfig, promptLoader: PromptLoader) {
@@ -53,15 +64,6 @@ export class StateDetector {
 
 	setCharacteristics(characteristics: AgentCharacteristics): void {
 		this.characteristics = characteristics;
-	}
-
-	setCooldown(durationMs: number): void {
-		this.cooldownUntil = Date.now() + durationMs;
-		logger.info("state-detector", `Cooldown set for ${durationMs}ms`);
-	}
-
-	private isInCooldown(): boolean {
-		return Date.now() < this.cooldownUntil;
 	}
 
 	onStateChange(callback: StateChangeCallback): () => void {
@@ -126,8 +128,8 @@ export class StateDetector {
 			// Content hasn't changed — check if stable long enough
 			const stableDuration = Date.now() - this.lastChangeTime;
 
-			if (stableDuration >= this.config.stableThresholdMs && !this.isInCooldown() && !this.analyzing) {
-				// Stable for too long and not in cooldown — trigger Layer 2
+			if (stableDuration >= this.config.stableThresholdMs && !this.analyzing) {
+				// Stable for too long — trigger Layer 2
 				this.analyzing = true;
 				logger.info("state-detector", `Content stable for ${stableDuration}ms, triggering Layer 2 analysis`);
 				try {
@@ -145,13 +147,12 @@ export class StateDetector {
 	}
 
 	/** Layer 1.5: Quick regex-based pattern matching */
-	private quickPatternCheck(content: string): PaneAnalysis | null {
+	quickPatternCheck(content: string): PaneAnalysis | null {
 		if (!this.characteristics) return null;
 
-		const lastLines = content.split("\n").slice(-5).join("\n");
-		const inCooldown = this.isInCooldown();
+		const lastLines = content.split("\n").slice(-8).join("\n");
 
-		// Check error patterns (always check, even during cooldown)
+		// Check error patterns
 		for (const pattern of this.characteristics.errorPatterns) {
 			if (pattern.test(lastLines)) {
 				return {
@@ -160,12 +161,6 @@ export class StateDetector {
 					detail: "Error pattern detected in output",
 				};
 			}
-		}
-
-		// During cooldown, skip completion and waiting patterns to avoid
-		// misinterpreting the previous round's prompt as current completion
-		if (inCooldown) {
-			return null;
 		}
 
 		// Check waiting patterns
@@ -191,6 +186,135 @@ export class StateDetector {
 		}
 
 		return null;
+	}
+
+	/** Capture current pane content hash for use as preHash */
+	async captureHash(paneTarget: string): Promise<string> {
+		const capture = await this.bridge.capturePane(paneTarget, {
+			startLine: -this.config.captureLines,
+		});
+		return createHash("md5").update(capture.content).digest("hex");
+	}
+
+	/**
+	 * Block until the tmux pane content changes from preHash and stabilizes.
+	 * Two-phase model:
+	 *   Phase 1: Wait for hash !== preHash (agent started responding)
+	 *   Phase 2: Wait for content to stabilize >= stableThresholdMs, then analyze
+	 */
+	async waitForSettled(
+		paneTarget: string,
+		taskContext: string,
+		opts: WaitForSettledOptions,
+	): Promise<SettledResult> {
+		const timeoutMs = opts.timeoutMs ?? 1800000; // 30 minutes
+		const startTime = Date.now();
+		let lastChangeTime = Date.now();
+		let lastHash = opts.preHash;
+		let lastContent = "";
+		let phase: 1 | 2 = 1;
+
+		logger.info("state-detector", `waitForSettled: starting Phase 1, preHash=${opts.preHash.slice(0, 8)}`);
+
+		while (true) {
+			// Timeout check
+			if (Date.now() - startTime >= timeoutMs) {
+				logger.info("state-detector", `waitForSettled: timeout after ${timeoutMs}ms`);
+				return {
+					analysis: { status: "active", confidence: 0, detail: `Timeout after ${timeoutMs}ms` },
+					content: lastContent,
+					timedOut: true,
+				};
+			}
+
+			// Abort check
+			if (opts.isAborted?.()) {
+				logger.info("state-detector", "waitForSettled: aborted");
+				return {
+					analysis: { status: "unknown", confidence: 0, detail: "Aborted by user" },
+					content: lastContent,
+					timedOut: false,
+				};
+			}
+
+			// Wait for poll interval
+			await new Promise((resolve) => setTimeout(resolve, this.config.pollIntervalMs));
+
+			// Capture current pane
+			try {
+				const capture = await this.bridge.capturePane(paneTarget, {
+					startLine: -this.config.captureLines,
+				});
+				const content = capture.content;
+				const hash = createHash("md5").update(content).digest("hex");
+
+				if (phase === 1) {
+					// Phase 1: Wait for hash to change from preHash
+					if (hash !== opts.preHash) {
+						lastHash = hash;
+						lastChangeTime = Date.now();
+						lastContent = content;
+						phase = 2;
+						logger.info("state-detector", "waitForSettled: Phase 1 → Phase 2 (content changed)");
+					}
+					continue;
+				}
+
+				// Phase 2: Wait for content to stabilize
+				if (hash !== lastHash) {
+					// Content changed — agent is still active
+					lastHash = hash;
+					lastChangeTime = Date.now();
+					lastContent = content;
+
+					// Fast escape: check for error or waiting_input patterns on each change
+					const quickResult = this.quickPatternCheck(content);
+					if (quickResult && quickResult.status === "error") {
+						logger.info("state-detector", "waitForSettled: error fast escape");
+						return { analysis: quickResult, content, timedOut: false };
+					}
+					if (quickResult && quickResult.status === "waiting_input") {
+						logger.info("state-detector", "waitForSettled: waiting_input fast escape");
+						return { analysis: quickResult, content, timedOut: false };
+					}
+					continue;
+				}
+
+				// Content stable — check duration
+				const stableDuration = Date.now() - lastChangeTime;
+				if (stableDuration >= this.config.stableThresholdMs) {
+					// Stable long enough — analyze
+					const quickResult = this.quickPatternCheck(lastContent);
+					if (quickResult) {
+						if (quickResult.status === "active" && quickResult.confidence > 0.7) {
+							// Agent appears still active despite stable content — reset and continue
+							logger.info("state-detector", "waitForSettled: stable but active pattern detected, continuing");
+							lastChangeTime = Date.now();
+							continue;
+						}
+						// error, waiting_input, completed, etc. — return
+						logger.info("state-detector", `waitForSettled: settled with pattern ${quickResult.status}`);
+						return { analysis: quickResult, content: lastContent, timedOut: false };
+					}
+
+					// No pattern match — use Layer 2 LLM analysis
+					logger.info("state-detector", `waitForSettled: stable for ${stableDuration}ms, triggering Layer 2`);
+					const analysis = await this.analyzeState(lastContent, taskContext);
+
+					if (analysis.status === "active" && analysis.confidence > 0.7) {
+						// LLM thinks still active — reset and continue
+						logger.info("state-detector", "waitForSettled: Layer 2 says active, continuing");
+						lastChangeTime = Date.now();
+						continue;
+					}
+
+					logger.info("state-detector", `waitForSettled: settled with Layer 2 ${analysis.status}`);
+					return { analysis, content: lastContent, timedOut: false };
+				}
+			} catch (err: any) {
+				logger.error("state-detector", `waitForSettled capture error: ${err.message}`);
+			}
+		}
 	}
 
 	/** Layer 2: LLM-based semantic analysis */
