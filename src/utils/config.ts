@@ -1,7 +1,8 @@
+import { createHash } from "node:crypto";
 import { existsSync } from "node:fs";
 import { mkdir, readFile, writeFile } from "node:fs/promises";
 import { homedir } from "node:os";
-import { dirname, join } from "node:path";
+import { basename, join, resolve } from "node:path";
 
 export interface LLMConfig {
 	provider: string;
@@ -148,6 +149,26 @@ export async function getSessionsDir(): Promise<string> {
 
 export async function getLogsDir(): Promise<string> {
 	const dir = join(CONFIG_DIR, "logs");
+	await mkdir(dir, { recursive: true });
+	return dir;
+}
+
+/**
+ * Generate a deterministic project storage directory path.
+ * Format: {basename}-{first 6 chars of sha256(absolutePath)}
+ */
+export function getProjectStorageDir(projectDir: string): string {
+	const absPath = resolve(projectDir);
+	const name = basename(absPath).toLowerCase();
+	const hash = createHash("sha256").update(absPath).digest("hex").slice(0, 6);
+	return join(CONFIG_DIR, "projects", `${name}-${hash}`);
+}
+
+/**
+ * Ensure the project storage directory exists and return its path.
+ */
+export async function ensureProjectStorageDir(projectDir: string): Promise<string> {
+	const dir = getProjectStorageDir(projectDir);
 	await mkdir(dir, { recursive: true });
 	return dir;
 }

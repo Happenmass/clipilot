@@ -6,15 +6,19 @@ import { MemoryStore, buildFileEntry, isMemoryPath, listMemoryFiles, sha256 } fr
 
 describe("MemoryStore", () => {
 	let tmpDir: string;
+	let storageDir: string;
 	let dbPath: string;
 	let store: MemoryStore;
 
 	beforeEach(async () => {
 		tmpDir = await mkdtemp(join(tmpdir(), "clipilot-test-"));
-		dbPath = join(tmpDir, "test.sqlite");
+		storageDir = join(tmpDir, "storage");
+		await mkdir(storageDir, { recursive: true });
+		dbPath = join(storageDir, "test.sqlite");
 		store = new MemoryStore({
 			dbPath,
 			workspaceDir: tmpDir,
+			storageDir,
 			vectorEnabled: false, // Don't require sqlite-vec in tests
 		});
 	});
@@ -25,6 +29,23 @@ describe("MemoryStore", () => {
 	});
 
 	describe("schema initialization", () => {
+		it("should auto-create parent directory if missing", () => {
+			const nestedDir = join(tmpDir, "nonexistent", "deep", "path");
+			const nestedDbPath = join(nestedDir, "memory.sqlite");
+			const nestedStore = new MemoryStore({
+				dbPath: nestedDbPath,
+				workspaceDir: tmpDir,
+				vectorEnabled: false,
+			});
+			// Should not throw — directory was created automatically
+			const tables = nestedStore
+				.getDb()
+				.prepare("SELECT name FROM sqlite_master WHERE type='table' ORDER BY name")
+				.all() as { name: string }[];
+			expect(tables.length).toBeGreaterThan(0);
+			nestedStore.close();
+		});
+
 		it("should create all required tables", () => {
 			const tables = store
 				.getDb()
@@ -133,25 +154,24 @@ describe("MemoryStore", () => {
 	});
 
 	describe("write", () => {
-		it("should write new memory file", async () => {
-			await mkdir(join(tmpDir, "memory"), { recursive: true });
+		it("should write new memory file to storageDir", async () => {
 			const result = await store.write({ path: "memory/test.md", content: "# Test\nHello" });
 			expect(result.success).toBe(true);
 			expect(store.isDirty()).toBe(true);
 
 			const { readFile } = await import("node:fs/promises");
-			const content = await readFile(join(tmpDir, "memory/test.md"), "utf-8");
+			const content = await readFile(join(storageDir, "memory/test.md"), "utf-8");
 			expect(content).toBe("# Test\nHello");
 		});
 
-		it("should append to existing file", async () => {
-			await mkdir(join(tmpDir, "memory"), { recursive: true });
-			await writeFile(join(tmpDir, "memory/core.md"), "# Core\n");
+		it("should append to existing file in storageDir", async () => {
+			await mkdir(join(storageDir, "memory"), { recursive: true });
+			await writeFile(join(storageDir, "memory/core.md"), "# Core\n");
 
 			await store.write({ path: "memory/core.md", content: "New line" });
 
 			const { readFile } = await import("node:fs/promises");
-			const content = await readFile(join(tmpDir, "memory/core.md"), "utf-8");
+			const content = await readFile(join(storageDir, "memory/core.md"), "utf-8");
 			expect(content).toBe("# Core\nNew line");
 		});
 
@@ -169,9 +189,9 @@ describe("isMemoryPath", () => {
 		expect(isMemoryPath("memory/2024-01-15.md")).toBe(true);
 	});
 
-	it("should accept legacy root files", () => {
-		expect(isMemoryPath("MEMORY.md")).toBe(true);
-		expect(isMemoryPath("memory.md")).toBe(true);
+	it("should reject legacy root files", () => {
+		expect(isMemoryPath("MEMORY.md")).toBe(false);
+		expect(isMemoryPath("memory.md")).toBe(false);
 	});
 
 	it("should reject non-memory paths", () => {
@@ -192,7 +212,7 @@ describe("listMemoryFiles", () => {
 		await rm(tmpDir, { recursive: true, force: true });
 	});
 
-	it("should find memory/*.md files", async () => {
+	it("should find memory/*.md files in storageDir", async () => {
 		await mkdir(join(tmpDir, "memory"), { recursive: true });
 		await writeFile(join(tmpDir, "memory/core.md"), "core");
 		await writeFile(join(tmpDir, "memory/todos.md"), "todos");
@@ -203,12 +223,11 @@ describe("listMemoryFiles", () => {
 		expect(files.some((f) => f.endsWith("todos.md"))).toBe(true);
 	});
 
-	it("should find root MEMORY.md", async () => {
+	it("should not find root MEMORY.md (legacy removed)", async () => {
 		await writeFile(join(tmpDir, "MEMORY.md"), "legacy");
 
 		const files = await listMemoryFiles(tmpDir);
-		expect(files).toHaveLength(1);
-		expect(files[0]).toContain("MEMORY.md");
+		expect(files).toHaveLength(0);
 	});
 
 	it("should return empty for no memory files", async () => {

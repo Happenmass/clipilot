@@ -1,8 +1,12 @@
 import { createHash } from "node:crypto";
+import { mkdirSync } from "node:fs";
 import { readFile, stat } from "node:fs/promises";
-import { join } from "node:path";
+import { createRequire } from "node:module";
+import { dirname, join } from "node:path";
 import Database from "better-sqlite3";
 import { logger } from "../utils/logger.js";
+
+const require = createRequire(import.meta.url);
 import type { FileEntry } from "./types.js";
 
 // ─── Schema SQL ─────────────────────────────────────────
@@ -73,8 +77,10 @@ const VEC_TABLE_SQL = (dims: number) =>
 export interface MemoryStoreConfig {
 	/** Path to the SQLite database file */
 	dbPath: string;
-	/** Workspace root directory */
+	/** Workspace root directory (project location, used for skills/prompts discovery) */
 	workspaceDir: string;
+	/** Centralized storage directory for memory files (defaults to workspaceDir for backwards compat) */
+	storageDir?: string;
 	/** Whether to attempt loading sqlite-vec */
 	vectorEnabled?: boolean;
 	/** Custom path to sqlite-vec shared library */
@@ -84,6 +90,7 @@ export interface MemoryStoreConfig {
 export class MemoryStore {
 	private db: Database.Database;
 	private workspaceDir: string;
+	private storageDir: string;
 	private vecAvailable = false;
 	private ftsAvailable = false;
 	private vecDims: number | null = null;
@@ -91,6 +98,8 @@ export class MemoryStore {
 
 	constructor(config: MemoryStoreConfig) {
 		this.workspaceDir = config.workspaceDir;
+		this.storageDir = config.storageDir ?? config.workspaceDir;
+		mkdirSync(dirname(config.dbPath), { recursive: true });
 		this.db = new Database(config.dbPath);
 
 		// Enable WAL mode for better concurrent read performance
@@ -136,6 +145,10 @@ export class MemoryStore {
 
 	getWorkspaceDir(): string {
 		return this.workspaceDir;
+	}
+
+	getStorageDir(): string {
+		return this.storageDir;
 	}
 
 	// ─── Vec Table Management ─────────────────────────────
@@ -329,12 +342,12 @@ export class MemoryStore {
 
 		const relPath = params.path.trim();
 
-		// Security: only allow memory/ directory or root MEMORY.md/memory.md
+		// Security: only allow memory/ directory
 		if (!isMemoryPath(relPath)) {
-			throw new Error("Only .md files under memory/ directory or root MEMORY.md/memory.md are allowed");
+			throw new Error("Only .md files under memory/ directory are allowed");
 		}
 
-		const absPath = join(this.workspaceDir, relPath);
+		const absPath = join(this.storageDir, relPath);
 
 		// Ensure directory exists
 		await mkdir(dirname(absPath), { recursive: true });
@@ -398,9 +411,7 @@ export class MemoryStore {
 
 export function isMemoryPath(relPath: string): boolean {
 	const normalized = relPath.replace(/\\/g, "/").replace(/^\.\//, "");
-	if (normalized === "MEMORY.md" || normalized === "memory.md") return true;
-	if (normalized.startsWith("memory/") && normalized.endsWith(".md")) return true;
-	return false;
+	return normalized.startsWith("memory/") && normalized.endsWith(".md");
 }
 
 export function sha256(text: string): string {
@@ -435,26 +446,14 @@ export async function buildFileEntry(absPath: string, workspaceDir: string): Pro
 	};
 }
 
-export async function listMemoryFiles(workspaceDir: string): Promise<string[]> {
-	const { readdir, access } = await import("node:fs/promises");
+export async function listMemoryFiles(storageDir: string): Promise<string[]> {
+	const { readdir } = await import("node:fs/promises");
 	const { join: joinPath } = await import("node:path");
 
 	const files: string[] = [];
 
-	// Check root-level legacy files
-	for (const name of ["MEMORY.md", "memory.md"]) {
-		const p = joinPath(workspaceDir, name);
-		try {
-			await access(p);
-			files.push(p);
-			break; // Only include one legacy file
-		} catch {
-			// Doesn't exist
-		}
-	}
-
-	// Scan memory/ directory
-	const memoryDir = joinPath(workspaceDir, "memory");
+	// Scan memory/ directory under centralized storage
+	const memoryDir = joinPath(storageDir, "memory");
 	try {
 		const entries = await readdir(memoryDir, { withFileTypes: true });
 		for (const entry of entries) {

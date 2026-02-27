@@ -37,11 +37,11 @@ export async function syncMemoryFiles(
 	const chunking = opts.chunking ?? { tokens: 400, overlap: 80 };
 	const stats = { added: 0, updated: 0, deleted: 0, chunksIndexed: 0 };
 
-	const currentFiles = await listMemoryFiles(store.getWorkspaceDir());
+	const currentFiles = await listMemoryFiles(store.getStorageDir());
 	const currentPaths = new Set<string>();
 
 	for (const absPath of currentFiles) {
-		const entry = await buildFileEntry(absPath, store.getWorkspaceDir());
+		const entry = await buildFileEntry(absPath, store.getStorageDir());
 		currentPaths.add(entry.path);
 
 		// Check if file has changed

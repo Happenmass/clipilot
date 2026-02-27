@@ -2,6 +2,7 @@ import { parseArgs } from "node:util";
 
 export interface CLIArgs {
 	goal: string | undefined;
+	isInit: boolean;
 	agent: string;
 	autonomy: "low" | "medium" | "high" | "full";
 	provider: string | undefined;
@@ -38,12 +39,14 @@ export function parseCliArgs(): CLIArgs {
 		process.exit(1);
 	}
 
-	// Handle "remember" subcommand
+	// Handle subcommands
 	const isRemember = positionals[0] === "remember";
+	const isInit = positionals[0] === "init";
 	const rememberText = isRemember ? positionals.slice(1).join(" ") || undefined : undefined;
 
 	return {
-		goal: isRemember ? undefined : positionals[0],
+		goal: isRemember || isInit ? undefined : positionals[0],
+		isInit,
 		agent: values.agent as string,
 		autonomy: autonomy as CLIArgs["autonomy"],
 		provider: values.provider as string | undefined,
@@ -69,6 +72,7 @@ Arguments:
   goal                    Development goal to accomplish (optional, interactive if omitted)
 
 Subcommands:
+  init                    Initialize project-level skills and prompts directories
   remember <text>         Save a note to project memory for future sessions
   config                  Open configuration TUI
   doctor                  Run health checks on the CLI environment

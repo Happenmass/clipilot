@@ -23,7 +23,7 @@ import { SkillRegistry } from "./skills/registry.js";
 import { TmuxBridge } from "./tmux/bridge.js";
 import { StateDetector } from "./tmux/state-detector.js";
 import { runConfigTUI } from "./tui/config-app.js";
-import { ensureConfigDir, loadConfig } from "./utils/config.js";
+import { ensureConfigDir, ensureProjectStorageDir, getProjectStorageDir, loadConfig } from "./utils/config.js";
 import { logger } from "./utils/logger.js";
 
 async function main(): Promise<void> {
@@ -64,8 +64,14 @@ async function main(): Promise<void> {
 	// Handle "remember" subcommand
 	if (args.rememberText !== undefined) {
 		if (args.rememberText) {
-			const dbPath = join(args.cwd, ".clipilot", "memory.sqlite");
-			const store = new MemoryStore({ dbPath, workspaceDir: args.cwd, vectorEnabled: false });
+			const rememberStorageDir = getProjectStorageDir(args.cwd);
+			const dbPath = join(rememberStorageDir, "memory.sqlite");
+			const store = new MemoryStore({
+				dbPath,
+				workspaceDir: args.cwd,
+				storageDir: rememberStorageDir,
+				vectorEnabled: false,
+			});
 			await store.write({ path: "memory/core.md", content: `\n- ${args.rememberText}` });
 			store.close();
 			console.log(`${chalk.green("Remembered:")} ${args.rememberText}`);
@@ -74,6 +80,32 @@ async function main(): Promise<void> {
 			console.error('Usage: clipilot remember "your note here"');
 			process.exit(1);
 		}
+		process.exit(0);
+	}
+
+	// Handle "init" subcommand
+	if (args.isInit) {
+		const { mkdir, writeFile, access } = await import("node:fs/promises");
+		const clipilotDir = join(args.cwd, ".clipilot");
+		const dirs = [join(clipilotDir, "skills"), join(clipilotDir, "prompts")];
+		let created = 0;
+		for (const dir of dirs) {
+			await mkdir(dir, { recursive: true });
+			const gitkeep = join(dir, ".gitkeep");
+			try {
+				await access(gitkeep);
+			} catch {
+				await writeFile(gitkeep, "", "utf-8");
+				created++;
+			}
+		}
+		if (created > 0) {
+			console.log(chalk.green("Initialized CLIPilot project directories:"));
+		} else {
+			console.log(chalk.dim("CLIPilot project directories already exist:"));
+		}
+		console.log(`  ${clipilotDir}/skills/`);
+		console.log(`  ${clipilotDir}/prompts/`);
 		process.exit(0);
 	}
 
@@ -124,11 +156,16 @@ async function main(): Promise<void> {
 	const promptLoader = new PromptLoader();
 	await promptLoader.load(args.cwd);
 
+	// Initialize project storage directory under ~/.clipilot/projects/
+	const storageDir = await ensureProjectStorageDir(args.cwd);
+	logger.info("main", `Project storage: ${storageDir}`);
+
 	// Initialize MemoryStore + Embedding Provider
-	const dbPath = join(args.cwd, ".clipilot", "memory.sqlite");
+	const dbPath = join(storageDir, "memory.sqlite");
 	const memoryStore = new MemoryStore({
 		dbPath,
 		workspaceDir: args.cwd,
+		storageDir,
 		vectorEnabled: true,
 	});
 
