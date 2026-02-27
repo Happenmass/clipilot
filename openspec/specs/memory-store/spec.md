@@ -4,15 +4,15 @@
 The system SHALL maintain a dual storage architecture: Markdown files as source of truth and SQLite database as search index. Deleting the SQLite database SHALL NOT result in data loss; the index MUST be rebuildable from Markdown source files.
 
 #### Scenario: Index rebuild after database deletion
-- **WHEN** the SQLite database file is deleted and the system starts
-- **THEN** the system rebuilds the full index from all Markdown files in `memory/` directory
+- **WHEN** the SQLite database file at `~/.clipilot/projects/{project-id}/memory.sqlite` is deleted and the system starts
+- **THEN** the system rebuilds the full index from all Markdown files in `~/.clipilot/projects/{project-id}/memory/` directory
 
 #### Scenario: Markdown file is the canonical source
 - **WHEN** a memory entry is written via `memory_write`
-- **THEN** the content is persisted to a `.md` file under `memory/` AND the SQLite index is updated
+- **THEN** the content is persisted to a `.md` file under `~/.clipilot/projects/{project-id}/memory/` AND the SQLite index is updated
 
 ### Requirement: SQLite schema initialization
-The system SHALL create a SQLite database with 6 tables on first run: `meta` (index config), `files` (tracked file state), `chunks` (text chunks with embeddings), `chunks_vec` (sqlite-vec virtual table), `chunks_fts` (FTS5 virtual table), `embedding_cache` (embedding dedup cache).
+The system SHALL create a SQLite database with 6 tables on first run: `meta` (index config), `files` (tracked file state), `chunks` (text chunks with embeddings), `chunks_vec` (sqlite-vec virtual table), `chunks_fts` (FTS5 virtual table), `embedding_cache` (embedding dedup cache). The `MemoryStore` constructor SHALL ensure the database file's parent directory exists before opening the database, using recursive directory creation.
 
 #### Scenario: First run database creation
 - **WHEN** the system initializes and no SQLite database exists
@@ -21,6 +21,10 @@ The system SHALL create a SQLite database with 6 tables on first run: `meta` (in
 #### Scenario: sqlite-vec unavailable
 - **WHEN** the sqlite-vec extension cannot be loaded
 - **THEN** the `chunks_vec` table is NOT created and the system falls back to brute-force cosine similarity search using the `embedding` column in the `chunks` table
+
+#### Scenario: Database parent directory does not exist
+- **WHEN** the `MemoryStore` is constructed with a `dbPath` whose parent directory does not exist
+- **THEN** the parent directory is created recursively before the database is opened, and no error is thrown
 
 ### Requirement: Markdown chunking
 The system SHALL split Markdown files into chunks using a line-based algorithm with configurable `tokens` (default 400) and `overlap` (default 80) parameters. Token-to-character conversion SHALL use `tokens * 4`.
@@ -49,8 +53,19 @@ The system SHALL track file state (path, content hash, mtime, size) in the `file
 - **THEN** all records for that file are removed from `files`, `chunks`, `chunks_vec`, `chunks_fts`
 
 ### Requirement: Workspace-local memory directory
-Memory files SHALL be stored in a `memory/` directory under the workspace root. The standard file layout includes `core.md`, `preferences.md`, `people.md`, `todos.md`, date-named files (`YYYY-MM-DD.md`), and custom topic files. Legacy `MEMORY.md` / `memory.md` at workspace root SHALL also be indexed.
+Memory files SHALL be stored in a `memory/` directory under the project's centralized storage directory at `~/.clipilot/projects/{project-id}/memory/`. The standard file layout includes `core.md`, `preferences.md`, `people.md`, `todos.md`, date-named files (`YYYY-MM-DD.md`), and custom topic files. Legacy `MEMORY.md` / `memory.md` at workspace root SHALL no longer be indexed.
 
 #### Scenario: Standard directory structure
 - **WHEN** the system initializes for a workspace
-- **THEN** it scans `memory/*.md` and root-level `MEMORY.md` / `memory.md` for indexing
+- **THEN** it scans `~/.clipilot/projects/{project-id}/memory/*.md` for indexing
+- **AND** it does NOT scan the project directory for `memory/` or `MEMORY.md`
+
+#### Scenario: Memory file write destination
+- **WHEN** content is written via `memory_write` tool with path `memory/core.md`
+- **THEN** the file is created at `~/.clipilot/projects/{project-id}/memory/core.md`
+- **AND** no files are written to the project directory
+
+#### Scenario: Index rebuild uses centralized storage
+- **WHEN** the SQLite database is deleted and the system starts
+- **THEN** the system rebuilds the index from Markdown files in `~/.clipilot/projects/{project-id}/memory/`
+- **AND** does NOT look in the project directory
