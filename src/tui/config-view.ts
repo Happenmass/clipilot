@@ -111,6 +111,13 @@ export class ConfigView implements Component {
 				description: "Custom API endpoint (optional)",
 				type: "text",
 			},
+			{
+				key: "debug",
+				label: "Debug Mode",
+				getValue: () => (this.config.debug ? chalk.green("ON") : chalk.dim("OFF")),
+				description: "Log every MainAgent LLM response for debugging",
+				type: "cycle",
+			},
 		];
 	}
 
@@ -238,6 +245,8 @@ export class ConfigView implements Component {
 		} else if (key === "agent") {
 			// Currently only one agent
 			this.config.defaultAgent = "claude-code";
+		} else if (key === "debug") {
+			this.config.debug = !this.config.debug;
 		}
 		this.cached = null;
 		this.box.invalidate();
