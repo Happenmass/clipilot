@@ -66,6 +66,8 @@ function createMinimalMocks() {
 function createMockMemoryStore(workspaceDir: string) {
 	return {
 		getWorkspaceDir: vi.fn().mockReturnValue(workspaceDir),
+		getStorageDir: vi.fn().mockReturnValue(workspaceDir),
+		getProjectId: vi.fn().mockReturnValue("test-abc123"),
 		getTrackedFilePaths: vi.fn().mockReturnValue([]),
 		isFtsAvailable: vi.fn().mockReturnValue(true),
 		write: vi.fn().mockResolvedValue({ success: true, path: "memory/core.md" }),

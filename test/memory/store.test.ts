@@ -2,7 +2,7 @@ import { mkdtemp, rm, writeFile, mkdir } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
-import { MemoryStore, buildFileEntry, isMemoryPath, listMemoryFiles, sha256 } from "../../src/memory/store.js";
+import { MemoryStore, buildFileEntry, isMemoryPath, listMemoryFiles, sanitizeVecTableProvider, sha256 } from "../../src/memory/store.js";
 
 describe("MemoryStore", () => {
 	let tmpDir: string;
@@ -17,6 +17,7 @@ describe("MemoryStore", () => {
 		dbPath = join(storageDir, "test.sqlite");
 		store = new MemoryStore({
 			dbPath,
+			projectId: "testproj-abc123",
 			workspaceDir: tmpDir,
 			storageDir,
 			vectorEnabled: false, // Don't require sqlite-vec in tests
@@ -34,6 +35,7 @@ describe("MemoryStore", () => {
 			const nestedDbPath = join(nestedDir, "memory.sqlite");
 			const nestedStore = new MemoryStore({
 				dbPath: nestedDbPath,
+				projectId: "nested-abc123",
 				workspaceDir: tmpDir,
 				vectorEnabled: false,
 			});
@@ -58,6 +60,27 @@ describe("MemoryStore", () => {
 			expect(names).toContain("chunks");
 			expect(names).toContain("embedding_cache");
 			// chunks_fts is a virtual table
+		});
+
+		it("should have project column in files table", () => {
+			store.upsertFile({ path: "memory/core.md", hash: "abc123", mtimeMs: 1000, size: 100 });
+			const row = store.getDb().prepare("SELECT project, path FROM files WHERE path = 'memory/core.md'").get() as any;
+			expect(row.project).toBe("testproj-abc123");
+		});
+
+		it("should have project column in chunks table", () => {
+			store.insertChunk({
+				id: "c1",
+				path: "memory/core.md",
+				startLine: 1,
+				endLine: 10,
+				hash: "h1",
+				model: "test",
+				text: "some text",
+				embedding: [],
+			});
+			const row = store.getDb().prepare("SELECT project FROM chunks WHERE id = 'c1'").get() as any;
+			expect(row.project).toBe("testproj-abc123");
 		});
 	});
 
@@ -99,13 +122,38 @@ describe("MemoryStore", () => {
 			store.removeFile("memory/old.md");
 
 			expect(store.getTrackedFile("memory/old.md")).toBeUndefined();
-			const chunks = store.getDb().prepare("SELECT * FROM chunks WHERE path = ?").all("memory/old.md");
+			const chunks = store.getDb().prepare("SELECT * FROM chunks WHERE path = ? AND project = ?").all("memory/old.md", "testproj-abc123");
 			expect(chunks).toHaveLength(0);
+		});
+
+		it("should isolate files by project", () => {
+			// Insert file for current project
+			store.upsertFile({ path: "memory/core.md", hash: "proj1hash", mtimeMs: 1000, size: 100 });
+
+			// Create another store for a different project (same DB)
+			const store2 = new MemoryStore({
+				dbPath,
+				projectId: "otherproj-def456",
+				workspaceDir: tmpDir,
+				storageDir,
+				vectorEnabled: false,
+			});
+			store2.upsertFile({ path: "memory/core.md", hash: "proj2hash", mtimeMs: 1000, size: 200 });
+
+			// Each project sees its own file
+			expect(store.getTrackedFile("memory/core.md")!.hash).toBe("proj1hash");
+			expect(store2.getTrackedFile("memory/core.md")!.hash).toBe("proj2hash");
+
+			// Each project's tracked paths are isolated
+			expect(store.getTrackedFilePaths()).toEqual(["memory/core.md"]);
+			expect(store2.getTrackedFilePaths()).toEqual(["memory/core.md"]);
+
+			store2.close();
 		});
 	});
 
 	describe("chunk operations", () => {
-		it("should insert and query chunks", () => {
+		it("should insert and query chunks with project", () => {
 			store.insertChunk({
 				id: "c1",
 				path: "memory/core.md",
@@ -119,10 +167,57 @@ describe("MemoryStore", () => {
 
 			const row = store.getDb().prepare("SELECT * FROM chunks WHERE id = ?").get("c1") as any;
 			expect(row).toBeDefined();
+			expect(row.project).toBe("testproj-abc123");
 			expect(row.path).toBe("memory/core.md");
 			expect(row.start_line).toBe(1);
 			expect(row.end_line).toBe(10);
 			expect(JSON.parse(row.embedding)).toEqual([0.1, 0.2, 0.3]);
+		});
+
+		it("should delete chunks scoped to project", () => {
+			// Insert chunk for current project
+			store.insertChunk({
+				id: "c1",
+				path: "memory/core.md",
+				startLine: 1,
+				endLine: 5,
+				hash: "h1",
+				model: "test",
+				text: "project 1 text",
+				embedding: [],
+			});
+
+			// Insert chunk for another project (same DB)
+			const store2 = new MemoryStore({
+				dbPath,
+				projectId: "otherproj-def456",
+				workspaceDir: tmpDir,
+				storageDir,
+				vectorEnabled: false,
+			});
+			store2.insertChunk({
+				id: "c2",
+				path: "memory/core.md",
+				startLine: 1,
+				endLine: 5,
+				hash: "h2",
+				model: "test",
+				text: "project 2 text",
+				embedding: [],
+			});
+
+			// Remove chunks for current project only
+			store.removeChunksByPath("memory/core.md");
+
+			// Current project's chunk is gone
+			const c1 = store.getDb().prepare("SELECT * FROM chunks WHERE id = 'c1'").get();
+			expect(c1).toBeUndefined();
+
+			// Other project's chunk still exists
+			const c2 = store.getDb().prepare("SELECT * FROM chunks WHERE id = 'c2'").get();
+			expect(c2).toBeDefined();
+
+			store2.close();
 		});
 	});
 
@@ -150,6 +245,25 @@ describe("MemoryStore", () => {
 
 			const remaining = store.loadCachedEmbeddings("p", "m", "k", ["hash0", "hash1", "hash2", "hash3", "hash4"]);
 			expect(remaining.size).toBeLessThanOrEqual(3);
+		});
+
+		it("should share embedding cache across projects", () => {
+			// Store1 caches an embedding
+			store.upsertCachedEmbedding("openai", "model-v1", "key1", "texthash1", [0.5, 0.6, 0.7]);
+
+			// Store2 (different project, same DB) can read the cache
+			const store2 = new MemoryStore({
+				dbPath,
+				projectId: "otherproj-def456",
+				workspaceDir: tmpDir,
+				storageDir,
+				vectorEnabled: false,
+			});
+
+			const cached = store2.loadCachedEmbeddings("openai", "model-v1", "key1", ["texthash1"]);
+			expect(cached.get("texthash1")).toEqual([0.5, 0.6, 0.7]);
+
+			store2.close();
 		});
 	});
 
@@ -179,6 +293,15 @@ describe("MemoryStore", () => {
 			await expect(store.write({ path: "src/main.ts", content: "hack" })).rejects.toThrow(
 				"Only .md files under memory/",
 			);
+		});
+	});
+
+	describe("vec table naming", () => {
+		it("should sanitize provider names for table names", () => {
+			expect(sanitizeVecTableProvider("openai")).toBe("openai");
+			expect(sanitizeVecTableProvider("OpenAI")).toBe("openai");
+			expect(sanitizeVecTableProvider("openai-v2")).toBe("openai_v2");
+			expect(sanitizeVecTableProvider("my.provider")).toBe("my_provider");
 		});
 	});
 });
