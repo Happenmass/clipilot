@@ -1,8 +1,16 @@
+import type { ContextManager } from "../core/context-manager.js";
 import type { MainAgent } from "../core/main-agent.js";
 import type { SignalRouter } from "../core/signal-router.js";
-import type { ContextManager } from "../core/context-manager.js";
-import type { ChatBroadcaster } from "./chat-broadcaster.js";
 import { logger } from "../utils/logger.js";
+import type { ChatBroadcaster } from "./chat-broadcaster.js";
+import type { CommandDescriptor, CommandRegistry } from "./command-registry.js";
+
+/** Built-in command descriptors registered at construction time */
+const BUILTIN_COMMANDS: CommandDescriptor[] = [
+	{ name: "stop", description: "停止当前执行任务", category: "builtin" },
+	{ name: "resume", description: "恢复上次中断的执行", category: "builtin" },
+	{ name: "clear", description: "清空对话历史", category: "builtin" },
+];
 
 /**
  * Routes slash commands (/stop, /resume, /clear) to the appropriate handlers.
@@ -19,11 +27,15 @@ export class CommandRouter {
 		signalRouter: SignalRouter;
 		contextManager: ContextManager;
 		broadcaster: ChatBroadcaster;
+		commandRegistry: CommandRegistry;
 	}) {
 		this.mainAgent = opts.mainAgent;
 		this.signalRouter = opts.signalRouter;
 		this.contextManager = opts.contextManager;
 		this.broadcaster = opts.broadcaster;
+
+		// Register built-in commands into the central registry
+		opts.commandRegistry.registerMany(BUILTIN_COMMANDS);
 	}
 
 	async handle(name: string): Promise<void> {

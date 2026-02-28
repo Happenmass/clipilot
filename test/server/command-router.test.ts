@@ -1,5 +1,6 @@
 import { describe, it, expect, vi, beforeEach } from "vitest";
 import { CommandRouter } from "../../src/server/command-router.js";
+import { CommandRegistry } from "../../src/server/command-registry.js";
 
 function createMockMainAgent(state: "idle" | "executing" = "idle") {
 	return {
@@ -35,17 +36,20 @@ describe("CommandRouter", () => {
 	let mockCtx: ReturnType<typeof createMockContextManager>;
 	let mockBroadcaster: ReturnType<typeof createMockBroadcaster>;
 	let commandRouter: CommandRouter;
+	let commandRegistry: CommandRegistry;
 
 	function setup(agentState: "idle" | "executing" = "idle") {
 		mockAgent = createMockMainAgent(agentState);
 		mockRouter = createMockSignalRouter();
 		mockCtx = createMockContextManager();
 		mockBroadcaster = createMockBroadcaster();
+		commandRegistry = new CommandRegistry();
 		commandRouter = new CommandRouter({
 			mainAgent: mockAgent,
 			signalRouter: mockRouter,
 			contextManager: mockCtx,
 			broadcaster: mockBroadcaster,
+			commandRegistry,
 		});
 	}
 
@@ -100,6 +104,16 @@ describe("CommandRouter", () => {
 			expect(mockRouter.stop).toHaveBeenCalled();
 			expect(mockCtx.clear).toHaveBeenCalled();
 			expect(mockBroadcaster.broadcast).toHaveBeenCalledWith({ type: "clear" });
+		});
+	});
+
+	describe("built-in command registration", () => {
+		it("should register stop, resume, clear into CommandRegistry", () => {
+			setup();
+			expect(commandRegistry.has("stop")).toBe(true);
+			expect(commandRegistry.has("resume")).toBe(true);
+			expect(commandRegistry.has("clear")).toBe(true);
+			expect(commandRegistry.size).toBe(3);
 		});
 	});
 

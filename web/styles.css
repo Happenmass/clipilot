@@ -163,9 +163,81 @@ body {
 
 /* ─── Input Area ─────────────────────────────────── */
 #input-area {
+	position: relative;
 	padding: 12px 20px 16px;
 	border-top: 1px solid var(--border);
 	background: var(--surface);
+}
+
+/* ─── Command Autocomplete Dropdown ─────────────── */
+.command-dropdown {
+	position: absolute;
+	bottom: 100%;
+	left: 20px;
+	right: 20px;
+	background: var(--surface);
+	border: 1px solid var(--border);
+	border-radius: 8px;
+	max-height: 240px;
+	overflow-y: auto;
+	z-index: 50;
+	box-shadow: 0 -4px 12px rgba(0, 0, 0, 0.3);
+}
+
+.command-dropdown.hidden {
+	display: none;
+}
+
+.command-item {
+	display: flex;
+	align-items: baseline;
+	gap: 10px;
+	padding: 8px 14px;
+	cursor: pointer;
+	transition: background 0.15s;
+}
+
+.command-item:hover,
+.command-item.active {
+	background: var(--surface-alt);
+}
+
+.command-item:first-child {
+	border-radius: 8px 8px 0 0;
+}
+
+.command-item:last-child {
+	border-radius: 0 0 8px 8px;
+}
+
+.command-name {
+	font-weight: 600;
+	color: var(--accent);
+	font-size: 14px;
+	white-space: nowrap;
+}
+
+.command-desc {
+	color: var(--text-dim);
+	font-size: 12px;
+	overflow: hidden;
+	text-overflow: ellipsis;
+	white-space: nowrap;
+}
+
+.command-category {
+	margin-left: auto;
+	font-size: 11px;
+	color: var(--text-dim);
+	opacity: 0.6;
+	white-space: nowrap;
+}
+
+.command-dropdown::-webkit-scrollbar { width: 4px; }
+.command-dropdown::-webkit-scrollbar-track { background: transparent; }
+.command-dropdown::-webkit-scrollbar-thumb {
+	background: var(--border);
+	border-radius: 2px;
 }
 
 #input-wrapper {

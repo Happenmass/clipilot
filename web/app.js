@@ -8,11 +8,15 @@
 	const sendBtn = document.getElementById("send-btn");
 	const statusDot = document.getElementById("status-dot");
 	const statusText = document.getElementById("status-text");
+	const dropdownEl = document.getElementById("command-dropdown");
 
 	let ws = null;
 	let currentAssistantEl = null; // The in-progress streaming message element
 	let reconnectTimer = null;
 	let agentState = "idle";
+	let commands = [];       // CommandDescriptor[] cache
+	let activeIndex = -1;    // Currently highlighted dropdown item
+	let isDropdownOpen = false;
 
 	// ─── WebSocket Connection ───────────────────────────
 
@@ -23,6 +27,7 @@
 		ws.onopen = function () {
 			setConnectionStatus("connected");
 			loadHistory();
+			fetchCommands();
 		};
 
 		ws.onmessage = function (event) {
@@ -192,11 +197,114 @@
 		return html;
 	}
 
+	// ─── Command Autocomplete ───────────────────────────
+
+	function fetchCommands() {
+		fetch("/api/commands")
+			.then(function (res) { return res.json(); })
+			.then(function (data) { commands = data; })
+			.catch(function () { commands = []; });
+	}
+
+	function getFilteredCommands() {
+		const text = inputEl.value;
+		if (!text.startsWith("/")) return [];
+		const query = text.slice(1).toLowerCase();
+		return commands
+			.filter(function (c) {
+				return c.name.toLowerCase().startsWith(query) ||
+					c.name.toLowerCase().includes(query);
+			})
+			.sort(function (a, b) {
+				var aStarts = a.name.toLowerCase().startsWith(query) ? 0 : 1;
+				var bStarts = b.name.toLowerCase().startsWith(query) ? 0 : 1;
+				if (aStarts !== bStarts) return aStarts - bStarts;
+				if (a.category !== b.category) return a.category === "builtin" ? -1 : 1;
+				return a.name.localeCompare(b.name);
+			});
+	}
+
+	function renderDropdown(filtered) {
+		if (filtered.length === 0) {
+			closeDropdown();
+			return;
+		}
+
+		dropdownEl.innerHTML = "";
+		for (var i = 0; i < filtered.length; i++) {
+			var cmd = filtered[i];
+			var item = document.createElement("div");
+			item.className = "command-item" + (i === activeIndex ? " active" : "");
+			item.dataset.index = String(i);
+			item.dataset.name = cmd.name;
+
+			var nameSpan = document.createElement("span");
+			nameSpan.className = "command-name";
+			nameSpan.textContent = "/" + cmd.name;
+
+			var descSpan = document.createElement("span");
+			descSpan.className = "command-desc";
+			descSpan.textContent = cmd.description;
+
+			var catSpan = document.createElement("span");
+			catSpan.className = "command-category";
+			catSpan.textContent = cmd.category;
+
+			item.appendChild(nameSpan);
+			item.appendChild(descSpan);
+			item.appendChild(catSpan);
+
+			item.addEventListener("click", function () {
+				selectCommand(this.dataset.name);
+			});
+
+			dropdownEl.appendChild(item);
+		}
+
+		dropdownEl.classList.remove("hidden");
+		isDropdownOpen = true;
+	}
+
+	function closeDropdown() {
+		dropdownEl.classList.add("hidden");
+		dropdownEl.innerHTML = "";
+		isDropdownOpen = false;
+		activeIndex = -1;
+	}
+
+	function selectCommand(name) {
+		inputEl.value = "/" + name;
+		closeDropdown();
+		inputEl.focus();
+		// Built-in commands need no arguments — send immediately
+		var cmd = commands.find(function (c) { return c.name === name; });
+		if (cmd && cmd.category === "builtin") {
+			sendMessage();
+		}
+	}
+
+	function updateActiveItem(items) {
+		for (var i = 0; i < items.length; i++) {
+			items[i].classList.toggle("active", i === activeIndex);
+		}
+		if (activeIndex >= 0 && items[activeIndex]) {
+			items[activeIndex].scrollIntoView({ block: "nearest" });
+		}
+	}
+
+	document.addEventListener("click", function (e) {
+		if (!dropdownEl.contains(e.target) && e.target !== inputEl) {
+			closeDropdown();
+		}
+	});
+
 	// ─── Input Handling ─────────────────────────────────
 
 	function sendMessage() {
 		const text = inputEl.value.trim();
 		if (!text || !ws || ws.readyState !== WebSocket.OPEN) return;
+
+		closeDropdown();
 
 		if (text.startsWith("/")) {
 			// Slash command
@@ -213,8 +321,46 @@
 		inputEl.style.height = "auto";
 	}
 
-	// Enter to send, Shift+Enter for newline
+	// Keyboard navigation: dropdown intercepts keys when open
 	inputEl.addEventListener("keydown", function (e) {
+		if (isDropdownOpen) {
+			var items = dropdownEl.querySelectorAll(".command-item");
+
+			if (e.key === "ArrowDown") {
+				e.preventDefault();
+				activeIndex = Math.min(activeIndex + 1, items.length - 1);
+				updateActiveItem(items);
+				return;
+			}
+
+			if (e.key === "ArrowUp") {
+				e.preventDefault();
+				activeIndex = Math.max(activeIndex - 1, 0);
+				updateActiveItem(items);
+				return;
+			}
+
+			if (e.key === "Enter" && !e.shiftKey && activeIndex >= 0) {
+				e.preventDefault();
+				selectCommand(items[activeIndex].dataset.name);
+				return;
+			}
+
+			if (e.key === "Escape") {
+				e.preventDefault();
+				closeDropdown();
+				return;
+			}
+
+			if (e.key === "Tab" && items.length > 0) {
+				e.preventDefault();
+				var idx = activeIndex >= 0 ? activeIndex : 0;
+				selectCommand(items[idx].dataset.name);
+				return;
+			}
+		}
+
+		// Default: Enter to send, Shift+Enter for newline
 		if (e.key === "Enter" && !e.shiftKey) {
 			e.preventDefault();
 			sendMessage();
@@ -223,10 +369,18 @@
 
 	sendBtn.addEventListener("click", sendMessage);
 
-	// Auto-resize textarea
+	// Auto-resize textarea + autocomplete trigger
 	inputEl.addEventListener("input", function () {
 		this.style.height = "auto";
 		this.style.height = Math.min(this.scrollHeight, 120) + "px";
+
+		if (this.value.startsWith("/")) {
+			activeIndex = -1;
+			var filtered = getFilteredCommands();
+			renderDropdown(filtered);
+		} else {
+			closeDropdown();
+		}
 	});
 
 	// ─── Initialize ─────────────────────────────────────

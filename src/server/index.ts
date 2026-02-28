@@ -1,16 +1,17 @@
 import { createServer } from "node:http";
-import { join, dirname } from "node:path";
+import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import express from "express";
 import { WebSocketServer, type WebSocket } from "ws";
+import type { ContextManager } from "../core/context-manager.js";
 import type { MainAgent } from "../core/main-agent.js";
 import type { SignalRouter } from "../core/signal-router.js";
-import type { ContextManager } from "../core/context-manager.js";
 import type { ConversationStore } from "../persistence/conversation-store.js";
-import { ChatBroadcaster } from "./chat-broadcaster.js";
+import { logger } from "../utils/logger.js";
+import type { ChatBroadcaster } from "./chat-broadcaster.js";
+import type { CommandRegistry } from "./command-registry.js";
 import { CommandRouter } from "./command-router.js";
 import { handleWebSocket } from "./ws-handler.js";
-import { logger } from "../utils/logger.js";
 
 export interface ServerOptions {
 	port: number;
@@ -19,6 +20,7 @@ export interface ServerOptions {
 	contextManager: ContextManager;
 	conversationStore: ConversationStore;
 	broadcaster: ChatBroadcaster;
+	commandRegistry: CommandRegistry;
 }
 
 export interface ServerInstance {
@@ -30,7 +32,7 @@ export interface ServerInstance {
  * Create and start the CLIPilot HTTP + WebSocket server.
  */
 export async function startServer(opts: ServerOptions): Promise<ServerInstance> {
-	const { port, mainAgent, signalRouter, contextManager, conversationStore, broadcaster } = opts;
+	const { port, mainAgent, signalRouter, contextManager, conversationStore, broadcaster, commandRegistry } = opts;
 
 	const app = express();
 	app.use(express.json());
@@ -59,6 +61,11 @@ export async function startServer(opts: ServerOptions): Promise<ServerInstance> 
 		});
 	});
 
+	app.get("/api/commands", (req, res) => {
+		const query = typeof req.query.q === "string" ? req.query.q : undefined;
+		res.json(commandRegistry.search(query));
+	});
+
 	// ─── HTTP server ────────────────────────────────────
 	const server = createServer(app);
 
@@ -70,6 +77,7 @@ export async function startServer(opts: ServerOptions): Promise<ServerInstance> 
 		signalRouter,
 		contextManager,
 		broadcaster,
+		commandRegistry,
 	});
 
 	wss.on("connection", (ws: WebSocket) => {

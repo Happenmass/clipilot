@@ -16,6 +16,7 @@ import { MemoryStore } from "./memory/store.js";
 import { syncMemoryFiles } from "./memory/sync.js";
 import { ConversationStore } from "./persistence/conversation-store.js";
 import { ChatBroadcaster } from "./server/chat-broadcaster.js";
+import { CommandRegistry } from "./server/command-registry.js";
 import { startServer } from "./server/index.js";
 import { discoverSkills } from "./skills/discovery.js";
 import { filterSkills } from "./skills/filter.js";
@@ -290,6 +291,23 @@ async function main(): Promise<void> {
 		logger.info("main-agent", message);
 	});
 
+	// ─── Command Registry ───────────────────────────────
+
+	const commandRegistry = new CommandRegistry();
+
+	// Register skill-declared commands
+	for (const skill of filteredSkills) {
+		for (const cmd of skill.commands) {
+			const cmdName = cmd.startsWith("/") ? cmd.slice(1) : cmd;
+			commandRegistry.register({
+				name: cmdName,
+				description: skill.description,
+				category: "skill",
+				skillName: skill.name,
+			});
+		}
+	}
+
 	// ─── Start Server ───────────────────────────────────
 
 	const serverInstance = await startServer({
@@ -299,6 +317,7 @@ async function main(): Promise<void> {
 		contextManager,
 		conversationStore,
 		broadcaster,
+		commandRegistry,
 	});
 
 	// ─── Graceful Shutdown ──────────────────────────────
