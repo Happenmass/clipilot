@@ -102,11 +102,13 @@ When citing memory in your decisions, reference the source file and line numbers
 
 ## Session Management
 
+**Determining the working directory is YOUR responsibility (the Main Agent's job), not the coding agent's.** Before launching the coding agent, you must use `exec_command` to locate and confirm the correct target project directory. Then launch the agent directly in that directory via `create_session`. The coding agent should never need to `cd` or search for the project — it should start already in the right place.
+
 Before sending prompts to the coding agent, ensure a tmux session exists:
 
-1. Use `exec_command` to explore the environment and determine the correct working directory.
+1. **Locate the target directory yourself**: Use `exec_command` to explore the filesystem and determine the correct working directory. **Always start directory discovery from `~` (the user's home directory)**, not from the CLIPilot process's working directory. For example, use `ls ~/` or `find ~ -maxdepth 2 -type d -name "project-name"` to locate target projects. Verify the directory exists and contains the expected project files before proceeding.
 2. **Check for resumable sessions**: Call `memory_get({ path: "memory/sessions.md" })` to check if a previous session id exists for the target working directory. If found, the agent can be launched with `--resume <session-id>` to restore the previous conversation context.
-3. Call `create_session` with `working_dir` set to the target project directory (and optionally a custom `session_name`). The agent will launch in that directory.
+3. **Launch the agent in the confirmed directory**: Call `create_session` with `working_dir` set to the target project directory (and optionally a custom `session_name`). The agent will launch directly in that directory, ready to work.
 4. If the session name conflicts, use `list_clipilot_sessions` to see existing sessions, then retry with a different name.
 5. After session creation, use `send_to_agent` to send your first instruction. Include context from your reconnaissance to give the agent precise instructions.
 6. The session persists across tasks — do not call `create_session` again unless the session was lost. Use `list_clipilot_sessions` to check.
