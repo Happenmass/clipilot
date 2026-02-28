@@ -7,7 +7,7 @@
 		"clipilot": "./dist/main.js"
 	},
 	"scripts": {
-		"build": "tsc",
+		"build": "tsc && cp -r src/agents/claude-code-skills dist/agents/",
 		"dev": "tsc --watch",
 		"start": "node dist/main.js",
 		"test": "vitest run",

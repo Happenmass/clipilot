@@ -5,4 +5,5 @@ dist/
 .env.*
 
 .claude
+.codex
 openspec/
