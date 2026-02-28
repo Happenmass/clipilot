@@ -4,9 +4,9 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## What is CLIPilot
 
-CLIPilot is a TUI meta-orchestrator that commands coding agents (like Claude Code) via tmux. It does not write code directly — it launches agents in tmux panes, monitors their state, and makes decisions through an LLM-driven goal-driven tool-use loop.
+CLIPilot is a chat-based meta-orchestrator that commands coding agents (like Claude Code) via tmux. It runs as a persistent HTTP + WebSocket server with a web chat UI. The MainAgent can hold natural conversations and autonomously execute complex development tasks by commanding coding agents in tmux sessions.
 
-Core flow: **Goal → MainAgent (goal-driven tool-use loop) → Agent execution in tmux**
+Core flow: **Chat message → MainAgent (IDLE ↔ EXECUTING state machine) → Streaming LLM → Tool execution in tmux → Response via WebSocket**
 
 ## Commands
 
@@ -18,7 +18,7 @@ npm run test:watch     # vitest — watch mode
 npx vitest test/core/main-agent.test.ts   # run a single test file
 npm run check          # biome check src/
 npm run format         # biome format --write src/
-npm start              # node dist/main.js
+npm start              # node dist/main.js — starts the server on port 3120
 ```
 
 ## Code Style
@@ -32,24 +32,73 @@ npm start              # node dist/main.js
 
 ## Architecture
 
-### Initialization (`src/main.ts`)
-Entry point. Parses CLI args, loads config/memory, initializes all components, runs the 3-phase flow:
-1. **Bootstrap** — MemoryStore (SQLite), EmbeddingProvider (auto-fallback), initial memory file sync, skill discovery → filter → registry
-2. **Execution** — `mainAgent.executeGoal(goal)` runs a goal-driven tool-use loop until completion or failure
-3. **Summary** — Session summary and memory persistence
+### Entry Point (`src/main.ts`)
+Parses CLI args, loads config/memory, initializes all components, starts the server:
+1. **Bootstrap** — MemoryStore (SQLite), EmbeddingProvider (auto-fallback), initial memory file sync, skill discovery → filter → registry, ConversationStore initialization
+2. **Restore** — If SQLite has existing messages, restore conversation into ContextManager
+3. **Serve** — Start Express + WebSocket server on configurable port (default 3120)
+4. **Shutdown** — SIGINT/SIGTERM triggers graceful shutdown (stop agent → close server → close DB)
+
+Subcommands: `config`, `doctor`, `init`, `remember` are handled before server startup.
 
 ### MainAgent (`src/core/main-agent.ts`)
-Goal-driven decision engine using LLM tool-use. `executeGoal(goal)` runs an unbounded loop: call LLM → extract tool calls → execute tools → repeat until a terminal tool is called. Emits events: `goal_start`, `goal_complete`, `goal_failed`, `need_human`, `log`. 12 built-in tools:
-- `send_to_agent` / `respond_to_agent` — interact with the coding agent in tmux
+Chat-driven decision engine with a two-state machine: **IDLE** ↔ **EXECUTING**.
+
+- **IDLE**: Waits for user messages via `handleMessage(content)`. Streams LLM response. If LLM returns tool calls → transitions to EXECUTING. If pure text → stays IDLE.
+- **EXECUTING**: Self-loop executing tool calls. Between rounds: checks `stopRequested`, drains `MessageQueue` (human messages queued during execution), checks context thresholds. Terminal tools (`mark_complete`, `mark_failed`, `escalate_to_human`) return to IDLE.
+
+Uses `llmClient.stream()` for all LLM calls — text deltas are broadcast to WebSocket clients in real-time.
+
+Emits events: `state_change`, `log`. 13 built-in tools:
+- `send_to_agent` / `respond_to_agent` — interact with coding agent in tmux (both have required `summary` parameter for chat UI updates)
 - `fetch_more` — capture more tmux pane content
-- `mark_complete` / `mark_failed` — terminal: end the goal
+- `mark_complete` / `mark_failed` — terminal: return to IDLE
 - `escalate_to_human` — terminal: request human intervention
 - `memory_search` / `memory_get` / `memory_write` — hybrid search, read, and persist memories
 - `read_skill` — read full SKILL.md content on demand
-- `create_session` — create a `clipilot-` prefixed tmux session and launch agent (LLM decides naming)
+- `create_session` — create a `clipilot-` prefixed tmux session and launch agent
 - `list_clipilot_sessions` — list all `clipilot-` prefixed sessions
+- `exec_command` — execute read-only bash commands for reconnaissance
 
-Skill-contributed tools are merged in at init via `tool-merge.ts` (with collision detection).
+### Server Layer (`src/server/`)
+HTTP + WebSocket server for the chat interface.
+
+- `index.ts` — Express app creation, static file serving (`web/`), REST API (`/api/history`, `/api/status`), WebSocket server on `/ws` path. `startServer()` returns a `ServerInstance` with a `close()` method.
+- `chat-broadcaster.ts` — Manages WebSocket client connections. `broadcast(message)` sends to all connected clients. Used by MainAgent to push `assistant_delta`, `assistant_done`, `agent_update`, `state`, `system`, `clear` messages.
+- `ws-handler.ts` — Handles individual WebSocket connections. Routes `{ type: "message" }` to `MainAgent.handleMessage()` and `{ type: "command" }` to `CommandRouter`. Sends current state on connect.
+- `command-router.ts` — Handles slash commands (`/stop`, `/resume`, `/clear`). `/stop` sets `stopRequested` on SignalRouter. `/resume` calls `MainAgent.handleResume()`. `/clear` stops execution → runs memory flush → clears SQLite → broadcasts clear event.
+- `message-queue.ts` — Simple FIFO queue for human messages received during EXECUTING state. Drained between tool-use rounds.
+
+### Conversation Persistence (`src/persistence/`)
+- `conversation-store.ts` — SQLite persistence for chat messages and context state. Two tables in the global `~/.clipilot/clipilot.db`:
+  - `chat_messages` — role, content (JSON-serialized), tool_call_id, created_at
+  - `chat_context_state` — key-value store for compressed_history, compaction_count, etc.
+  - Methods: `saveMessage()`, `loadMessages()`, `saveContextState()`, `loadContextState()`, `clearAll()`, `getMessageCount()`
+
+### ContextManager (`src/core/context-manager.ts`)
+Modular system prompt with replaceable sections (`{{compressed_history}}`, `{{memory}}`, `{{agent_capabilities}}`). Two-layer context guard:
+
+- **Layer 2 — Memory Flush** (60% threshold): extracts valuable insights from conversation and persists to memory files via `memory-flush.md` prompt
+- **Layer 3 — Compression** (70% threshold): compresses conversation history, resets context, re-injects POST_COMPACTION_CONTEXT
+
+Supports conversation persistence:
+- `addMessage()` auto-persists to SQLite when ConversationStore is configured
+- `restore(store)` rebuilds conversation state from SQLite on server restart
+- `clear()` runs memory flush → clears memory state → clears SQLite
+- `compress()` persists compressed_history and compaction_count to SQLite after compression
+
+Uses hybrid token counting: last-known API count + pending character estimation.
+
+### SignalRouter (`src/core/signal-router.ts`)
+Provides execution control for the MainAgent loop:
+- `stop()` — sets `_stopRequested = true`, checked between tool-use rounds
+- `resume()` — clears `_stopRequested`
+- `isStopRequested()` — query current state
+
+Also aggregates StateDetector results into typed signals for tmux agent monitoring.
+
+### StateDetector (`src/tmux/state-detector.ts`)
+Polls tmux pane content, computes content hashes, and classifies agent state (active, waiting_input, completed, error) using pattern matching. Falls back to LLM analysis for ambiguous states. Has a cooldown mechanism to avoid excessive polling.
 
 ### Memory Module (`src/memory/`)
 Dual-storage architecture: Markdown files are the source of truth, SQLite is the search index (rebuildable).
@@ -73,41 +122,43 @@ Extensible capability system allowing agents to contribute domain-specific tools
 - `tool-merge.ts` — merges skill tool definitions into MainAgent's tool set with collision detection
 - `types.ts` — three skill types: `agent-capability`, `main-agent-tool`, `prompt-enrichment`
 
-### ContextManager (`src/core/context-manager.ts`)
-Modular system prompt with replaceable sections (`{{goal}}`, `{{compressed_history}}`, `{{memory}}`, `{{agent_capabilities}}`). Two-layer context guard:
-
-- **Layer 2 — Memory Flush** (60% threshold): extracts valuable insights from conversation and persists to memory files via `memory-flush.md` prompt
-- **Layer 3 — Compression** (70% threshold): compresses conversation history, resets context, re-injects POST_COMPACTION_CONTEXT
-
-Uses hybrid token counting: last-known API count + pending character estimation.
-
-### SignalRouter (`src/core/signal-router.ts`)
-Aggregates StateDetector results into typed signals (`DECISION_NEEDED`, `NOTIFY`, `USER_STEER`). Provides execution control: `pause()`, `resume()`, `abort()`. Extends EventEmitter for `goal_complete`, `goal_failed`, `need_human`, `log` events. The MainAgent waits on signals between tool-use rounds.
-
-### StateDetector (`src/tmux/state-detector.ts`)
-Polls tmux pane content, computes content hashes, and classifies agent state (active, waiting_input, completed, error) using pattern matching. Falls back to LLM analysis for ambiguous states. Has a cooldown mechanism to avoid excessive polling.
-
 ### LLM Layer (`src/llm/`)
-- `client.ts` — unified client supporting Anthropic and OpenAI-compatible protocols
+- `client.ts` — unified client supporting Anthropic and OpenAI-compatible protocols. Both `complete()` (single response) and `stream()` (async iterable of `LLMStreamEvent`) methods.
 - `providers/registry.ts` — 12 built-in providers (OpenAI, Anthropic, DeepSeek, Gemini, Groq, etc.)
 - `prompt-loader.ts` — loads markdown prompt templates from `prompts/` with `{{variable}}` interpolation
 
 ### Prompts (`prompts/`)
 Markdown templates with `{{variable}}` placeholders:
-- `main-agent.md` — MainAgent system prompt (goal-driven autonomous decision guidelines, signals, memory recall, session management, skill usage)
+- `main-agent.md` — MainAgent system prompt (chat-mode autonomous decision guidelines, execution paths, memory recall, session management, skill usage)
 - `state-analyzer.md` — ambiguous state classification
 - `history-compressor.md` — conversation compression
 - `memory-flush.md` — extract decisions/preferences/knowledge from conversation for persistence
 - `error-analyzer.md`, `session-summarizer.md`
 
+### Chat UI (`web/`)
+Minimal vanilla HTML/CSS/JS chat interface served by Express as static files.
+
+- `index.html` — page structure: header with status indicator, message list, input area
+- `styles.css` — dark theme, message bubbles (user/assistant/agent-update/system), status indicator with idle/executing animation
+- `app.js` — WebSocket connection management (connect/reconnect), message routing, streaming delta display, slash command support, basic Markdown rendering, history loading via `/api/history`
+
 ### Other Components
 - `TmuxBridge` (`src/tmux/bridge.ts`) — tmux command wrapper (create sessions, send keys, capture panes, `listClipilotSessions()`)
 - `Session` (`src/core/session.ts`) — session lifecycle management
 - `ClaudeCodeAdapter` (`src/agents/claude-code.ts`) — agent adapter for Claude Code
+- `AppTUI` (`src/tui/app.ts`) — legacy TUI dashboard (still compiles but not used as primary interface)
 
 ## Testing
 
-Tests live in `test/` mirroring `src/` structure. All tests mock external dependencies (LLM calls, tmux commands). The integration test (`test/core/integration.test.ts`) validates the full Goal → executeGoal → GoalResult pipeline with mocked components.
+Tests live in `test/` mirroring `src/` structure. All tests mock external dependencies (LLM calls, tmux commands).
+
+Key test files:
+- `test/core/main-agent.test.ts` — MainAgent state machine tests (IDLE → EXECUTING → IDLE, streaming, message queuing, stopRequested, terminal tools)
+- `test/core/integration.test.ts` — End-to-end flow: handleMessage → streaming LLM → tool execution → state transitions (uses real ContextManager + SignalRouter)
+- `test/server/command-router.test.ts` — Slash command handling (/stop, /resume, /clear)
+- `test/server/ws-handler.test.ts` — WebSocket connection handling, message routing
+- `test/persistence/conversation-store.test.ts` — SQLite persistence layer
+- `test/core/context-manager-persistence.test.ts` — ContextManager persistence, restore, clear
 
 ## Config
 
@@ -120,3 +171,17 @@ Memory-related config under `config.memory`:
 - `vectorWeight` — hybrid search vector weight (default 0.7, keyword = 1 - vectorWeight)
 - `decayHalfLifeDays` — time decay for daily memories (default 30)
 - `skills.disabled` — list of skill names to disable
+
+## WebSocket Message Protocol
+
+Client → Server:
+- `{ type: "message", content: string }` — user chat message
+- `{ type: "command", name: string }` — slash command (/stop, /resume, /clear)
+
+Server → Client:
+- `{ type: "assistant_delta", delta: string }` — streaming text fragment
+- `{ type: "assistant_done" }` — streaming response complete
+- `{ type: "agent_update", summary: string }` — agent interaction summary
+- `{ type: "state", state: "idle" | "executing" }` — state change
+- `{ type: "system", message: string }` — system notification
+- `{ type: "clear" }` — clear chat history on frontend
