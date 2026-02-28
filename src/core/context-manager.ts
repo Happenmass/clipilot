@@ -2,6 +2,7 @@ import type { LLMClient } from "../llm/client.js";
 import type { PromptLoader } from "../llm/prompt-loader.js";
 import type { LLMMessage, ToolCallContent } from "../llm/types.js";
 import type { MemoryStore } from "../memory/store.js";
+import type { ConversationStore } from "../persistence/conversation-store.js";
 import { logger } from "../utils/logger.js";
 
 // ─── Types ──────────────────────────────────────────────
@@ -22,6 +23,8 @@ export interface ContextManagerConfig {
 	memoryStore?: MemoryStore;
 	/** Number of recent tool results to keep in full. Older results are summarized. Default 20. */
 	toolResultRetention?: number;
+	/** ConversationStore for SQLite persistence (optional — persistence disabled if not provided) */
+	conversationStore?: ConversationStore;
 }
 
 // ─── ContextManager ─────────────────────────────────────
@@ -47,6 +50,9 @@ export class ContextManager {
 	private compactionCount = 0;
 	private lastFlushCompactionCount = -1;
 
+	// Conversation persistence
+	private conversationStore: ConversationStore | null;
+
 	constructor(config: ContextManagerConfig) {
 		this.llmClient = config.llmClient;
 		this.promptLoader = config.promptLoader;
@@ -55,6 +61,7 @@ export class ContextManager {
 		this.flushThreshold = config.flushThreshold ?? 0.6;
 		this.toolResultRetention = config.toolResultRetention ?? 20;
 		this.memoryStore = config.memoryStore ?? null;
+		this.conversationStore = config.conversationStore ?? null;
 
 		// Validate flush < compress invariant
 		if (this.flushThreshold >= this.compressionThreshold) {
@@ -92,6 +99,10 @@ export class ContextManager {
 		} else {
 			this.pendingChars += JSON.stringify(message.content).length;
 		}
+		// Persist to SQLite when ConversationStore is configured
+		if (this.conversationStore) {
+			this.conversationStore.saveMessage(message);
+		}
 	}
 
 	getMessages(): LLMMessage[] {
@@ -100,6 +111,92 @@ export class ContextManager {
 
 	getConversationLength(): number {
 		return this.conversation.length;
+	}
+
+	// ─── Persistence: restore / clear ────────────────────
+
+	/**
+	 * Restore conversation and context state from SQLite.
+	 * Rebuilds conversation[], modules, and counters.
+	 */
+	restore(store: ConversationStore): void {
+		this.conversationStore = store;
+
+		// 1. Restore conversation messages
+		const messages = store.loadMessages();
+		this.conversation = messages;
+
+		// 2. Restore compressed_history module
+		const compressedHistory = store.loadContextState("compressed_history");
+		if (compressedHistory) {
+			this.modules.set("compressed_history", compressedHistory);
+		}
+
+		// 3. Restore goal module
+		const goal = store.loadContextState("goal");
+		if (goal) {
+			this.modules.set("goal", goal);
+		}
+
+		// 4. Restore counters
+		const tokenCount = store.loadContextState("token_count");
+		if (tokenCount) {
+			this.lastKnownTokenCount = Number.parseInt(tokenCount, 10) || 0;
+		}
+		const compactionCount = store.loadContextState("compaction_count");
+		if (compactionCount) {
+			this.compactionCount = Number.parseInt(compactionCount, 10) || 0;
+		}
+
+		// 5. Recalculate pendingChars
+		this.pendingChars = 0;
+		for (const msg of this.conversation) {
+			if (typeof msg.content === "string") {
+				this.pendingChars += msg.content.length;
+			} else {
+				this.pendingChars += JSON.stringify(msg.content).length;
+			}
+		}
+
+		logger.info(
+			"context-manager",
+			`Restored ${messages.length} messages, compactionCount=${this.compactionCount}`,
+		);
+	}
+
+	/**
+	 * Clear conversation: memory flush → clear memory state → clear SQLite.
+	 * Preserves static modules like agent_capabilities.
+	 */
+	async clear(): Promise<void> {
+		// 1. Run memory flush if MemoryStore is available
+		if (this.memoryStore && this.conversation.length > 0) {
+			try {
+				await this.runMemoryFlush();
+			} catch (err: any) {
+				logger.warn("context-manager", `Memory flush during clear failed: ${err.message}`);
+			}
+		}
+
+		// 2. Clear conversation
+		this.conversation = [];
+
+		// 3. Remove dynamic modules (preserve static ones like agent_capabilities)
+		this.modules.delete("goal");
+		this.modules.delete("compressed_history");
+
+		// 4. Reset counters
+		this.lastKnownTokenCount = 0;
+		this.pendingChars = 0;
+		this.compactionCount = 0;
+		this.lastFlushCompactionCount = -1;
+
+		// 5. Clear SQLite
+		if (this.conversationStore) {
+			this.conversationStore.clearAll();
+		}
+
+		logger.info("context-manager", "Context cleared");
 	}
 
 	// ─── prepareForLLM (Layer 1) ──────────────────────────
@@ -294,11 +391,25 @@ export class ContextManager {
 		this.lastKnownTokenCount = 0;
 		this.pendingChars = 0;
 
+		// Persist compressed_history and compaction_count to SQLite
+		if (this.conversationStore) {
+			this.conversationStore.saveContextState("compressed_history", response.content.trim());
+			this.conversationStore.saveContextState("compaction_count", String(this.compactionCount));
+			// Clear old messages from SQLite since conversation was reset
+			this.conversationStore.clearAll();
+			this.conversationStore.saveContextState("compressed_history", response.content.trim());
+			this.conversationStore.saveContextState("compaction_count", String(this.compactionCount));
+		}
+
 		// Post-compaction context injection
 		this.conversation.push({
 			role: "user",
 			content: POST_COMPACTION_CONTEXT,
 		});
+		// Persist the post-compaction context message
+		if (this.conversationStore) {
+			this.conversationStore.saveMessage({ role: "user", content: POST_COMPACTION_CONTEXT });
+		}
 
 		logger.info("context-manager", "Conversation compressed and reset");
 	}
