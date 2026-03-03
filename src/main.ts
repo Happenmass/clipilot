@@ -254,7 +254,20 @@ async function main(): Promise<void> {
 	const baseCapabilities = adapterCapabilities || "Direct code editing and file operations\nRunning terminal commands";
 	const capabilitiesSummary = buildCapabilitiesSummary(baseCapabilities, filteredSkills);
 	contextManager.updateModule("agent_capabilities", capabilitiesSummary);
-	contextManager.updateModule("openspec_tool_name", defaultAdapter.getOpenSpecToolName?.() ?? "claude");
+	const openspecCmds = defaultAdapter.getOpenSpecCommands?.() ?? {
+		toolName: "claude",
+		explore: "/opsx:explore",
+		propose: "/opsx:propose",
+		apply: "/opsx:apply",
+		archive: "/opsx:archive",
+		wildcard: "/opsx:*",
+	};
+	contextManager.updateModule("openspec_tool_name", openspecCmds.toolName);
+	contextManager.updateModule("openspec_cmd_explore", openspecCmds.explore);
+	contextManager.updateModule("openspec_cmd_propose", openspecCmds.propose);
+	contextManager.updateModule("openspec_cmd_apply", openspecCmds.apply);
+	contextManager.updateModule("openspec_cmd_archive", openspecCmds.archive);
+	contextManager.updateModule("openspec_cmd_wildcard", openspecCmds.wildcard);
 	const skillRegistry = new SkillRegistry(filteredSkills);
 	logger.info("main", `Skills loaded: ${skillRegistry.size} (${filteredSkills.map((s) => s.name).join(", ")})`);
 

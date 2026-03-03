@@ -14,6 +14,21 @@ export interface LaunchOptions {
 	env?: Record<string, string>;
 }
 
+export interface OpenSpecCommands {
+	/** Tool name for `openspec init --tools <name>` (e.g. "claude", "codex") */
+	toolName: string;
+	/** Explore command (e.g. "/opsx:explore", "/prompts:opsx-explore") */
+	explore: string;
+	/** Propose command */
+	propose: string;
+	/** Apply command */
+	apply: string;
+	/** Archive command */
+	archive: string;
+	/** Wildcard reference for all commands (e.g. "/opsx:*") */
+	wildcard: string;
+}
+
 export interface AgentCharacteristics {
 	/** Patterns indicating the agent is waiting for user input */
 	waitingPatterns: RegExp[];
@@ -69,8 +84,8 @@ export interface AgentAdapter {
 	/** Return the relative path to the adapter's capabilities file under prompts/ (e.g. "adapters/claude-code.md") */
 	getCapabilitiesFile?(): string;
 
-	/** Return the tool name for `openspec init --tools <name>` (e.g. "claude", "codex") */
-	getOpenSpecToolName?(): string;
+	/** Return OpenSpec command mappings for this adapter */
+	getOpenSpecCommands?(): OpenSpecCommands;
 
 	/** Exit the agent process and return captured output with optional session id */
 	exitAgent?(bridge: TmuxBridge, paneTarget: string): Promise<ExitAgentResult>;
