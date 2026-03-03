@@ -166,7 +166,7 @@ const TOOL_DEFINITIONS: ToolDefinition[] = [
 		parameters: {
 			type: "object",
 			properties: {
-				name: { type: "string", description: 'The skill name (e.g. "openspec", "commit")' },
+				name: { type: "string", description: 'The skill name (e.g. "commit")' },
 			},
 			required: ["name"],
 		},
