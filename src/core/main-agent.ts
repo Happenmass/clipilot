@@ -125,8 +125,7 @@ const TOOL_DEFINITIONS: ToolDefinition[] = [
 				minScore: { type: "number", description: "Minimum relevance score 0-1 (default 0.1)" },
 				category: {
 					type: "string",
-					description:
-						'Optional category filter: "core", "preferences", "people", "todos", "daily", "legacy", "topic"',
+					description: 'Optional category filter: "core", "preferences", "people", "todos", "daily", "topic"',
 				},
 			},
 			required: ["query"],

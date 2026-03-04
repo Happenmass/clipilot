@@ -30,7 +30,7 @@ export type MemorySearchResult = {
 
 // ─── Categories ─────────────────────────────────────────
 
-export type MemoryCategory = "core" | "preferences" | "people" | "todos" | "daily" | "legacy" | "topic";
+export type MemoryCategory = "core" | "preferences" | "people" | "todos" | "daily" | "topic";
 
 // ─── Embedding Provider ─────────────────────────────────
 

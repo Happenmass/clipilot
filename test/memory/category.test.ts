@@ -23,14 +23,6 @@ describe("categoryFromPath", () => {
 		expect(categoryFromPath("memory/2023-12-31.md")).toBe("daily");
 	});
 
-	it("should map MEMORY.md to legacy", () => {
-		expect(categoryFromPath("MEMORY.md")).toBe("legacy");
-	});
-
-	it("should map memory.md to legacy", () => {
-		expect(categoryFromPath("memory.md")).toBe("legacy");
-	});
-
 	it("should map custom topic files to topic", () => {
 		expect(categoryFromPath("memory/deployment-guide.md")).toBe("topic");
 		expect(categoryFromPath("memory/architecture.md")).toBe("topic");
@@ -66,10 +58,6 @@ describe("isEvergreenCategory", () => {
 		expect(isEvergreenCategory("todos")).toBe(true);
 	});
 
-	it("should return true for legacy", () => {
-		expect(isEvergreenCategory("legacy")).toBe(true);
-	});
-
 	it("should return true for topic", () => {
 		expect(isEvergreenCategory("topic")).toBe(true);
 	});
@@ -89,7 +77,6 @@ describe("buildCategoryPathFilter", () => {
 		"memory/2024-02-10.md",
 		"memory/deployment-guide.md",
 		"memory/architecture.md",
-		"MEMORY.md",
 	];
 
 	it("should return exact path for core", () => {
@@ -106,10 +93,6 @@ describe("buildCategoryPathFilter", () => {
 
 	it("should return exact path for todos", () => {
 		expect(buildCategoryPathFilter("todos", trackedPaths)).toEqual(["memory/todos.md"]);
-	});
-
-	it("should return legacy paths", () => {
-		expect(buildCategoryPathFilter("legacy", trackedPaths)).toEqual(["MEMORY.md", "memory.md"]);
 	});
 
 	it("should return all date-named paths for daily", () => {

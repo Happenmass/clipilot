@@ -315,9 +315,7 @@ describe("MainAgent memory tools", () => {
 	describe("path security", () => {
 		it("should reject writes to paths outside memory/ via store validation", async () => {
 			const mockStore = createMockMemoryStore(tmpDir);
-			mockStore.write.mockRejectedValue(
-				new Error("Only .md files under memory/ directory or root MEMORY.md/memory.md are allowed"),
-			);
+			mockStore.write.mockRejectedValue(new Error("Only .md files under memory/ directory are allowed"));
 			const agent = createAgent({ memoryStore: mockStore });
 
 			const result = await (agent as any).executeTool({
@@ -332,9 +330,7 @@ describe("MainAgent memory tools", () => {
 
 		it("should reject writes to non-.md files via store validation", async () => {
 			const mockStore = createMockMemoryStore(tmpDir);
-			mockStore.write.mockRejectedValue(
-				new Error("Only .md files under memory/ directory or root MEMORY.md/memory.md are allowed"),
-			);
+			mockStore.write.mockRejectedValue(new Error("Only .md files under memory/ directory are allowed"));
 			const agent = createAgent({ memoryStore: mockStore });
 
 			const result = await (agent as any).executeTool({
@@ -349,9 +345,7 @@ describe("MainAgent memory tools", () => {
 
 		it("should reject path traversal attempts", async () => {
 			const mockStore = createMockMemoryStore(tmpDir);
-			mockStore.write.mockRejectedValue(
-				new Error("Only .md files under memory/ directory or root MEMORY.md/memory.md are allowed"),
-			);
+			mockStore.write.mockRejectedValue(new Error("Only .md files under memory/ directory are allowed"));
 			const agent = createAgent({ memoryStore: mockStore });
 
 			const result = await (agent as any).executeTool({

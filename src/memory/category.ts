@@ -10,7 +10,6 @@ const KNOWN_CATEGORY_FILES: Record<string, MemoryCategory> = {
 };
 
 const DATE_PATTERN = /^memory\/\d{4}-\d{2}-\d{2}\.md$/;
-const LEGACY_FILES = new Set(["MEMORY.md", "memory.md"]);
 
 /**
  * Infer memory category from file path without additional metadata.
@@ -21,14 +20,10 @@ const LEGACY_FILES = new Set(["MEMORY.md", "memory.md"]);
  * - memory/people.md → "people"
  * - memory/todos.md → "todos"
  * - memory/YYYY-MM-DD.md → "daily"
- * - MEMORY.md / memory.md → "legacy"
  * - Other memory/*.md → "topic"
  */
 export function categoryFromPath(relPath: string): MemoryCategory {
 	const normalized = relPath.replace(/\\/g, "/").replace(/^\.\//, "");
-
-	// Legacy root files
-	if (LEGACY_FILES.has(normalized)) return "legacy";
 
 	// Known category files
 	const known = KNOWN_CATEGORY_FILES[normalized];
@@ -70,8 +65,6 @@ export function buildCategoryPathFilter(category: MemoryCategory, trackedPaths: 
 			return ["memory/people.md"];
 		case "todos":
 			return ["memory/todos.md"];
-		case "legacy":
-			return ["MEMORY.md", "memory.md"];
 		case "daily":
 			return trackedPaths.filter((p) => DATE_PATTERN.test(p));
 		case "topic":
