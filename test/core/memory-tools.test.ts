@@ -194,6 +194,28 @@ describe("MainAgent memory tools", () => {
 			expect(result.terminal).toBe(false);
 		});
 
+		it("should read project-prefixed paths from the matching project storage directory", async () => {
+			const currentProjectDir = join(tmpDir, "current-proj");
+			const otherProjectDir = join(tmpDir, "other-proj");
+			await mkdir(join(currentProjectDir, "memory"), { recursive: true });
+			await mkdir(join(otherProjectDir, "memory"), { recursive: true });
+			await writeFile(join(currentProjectDir, "memory", "core.md"), "current project memory");
+			await writeFile(join(otherProjectDir, "memory", "core.md"), "other project memory");
+
+			const mockStore = createMockMemoryStore(currentProjectDir);
+			const agent = createAgent({ memoryStore: mockStore });
+
+			const result = await (agent as any).executeTool({
+				type: "tool_call",
+				id: "tc1",
+				name: "memory_get",
+				arguments: { path: "other-proj/memory/core.md" },
+			});
+
+			expect(result.output).toBe("other project memory");
+			expect(result.terminal).toBe(false);
+		});
+
 		it("should handle file-not-found", async () => {
 			const mockStore = createMockMemoryStore(tmpDir);
 			const agent = createAgent({ memoryStore: mockStore });

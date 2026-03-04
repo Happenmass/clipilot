@@ -1,7 +1,7 @@
 import { execFile } from "node:child_process";
 import { EventEmitter } from "node:events";
 import { readFile, stat } from "node:fs/promises";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
 import { promisify } from "node:util";
 import type { AgentAdapter } from "../agents/adapter.js";
 import type { LLMClient } from "../llm/client.js";
@@ -104,7 +104,7 @@ const TOOL_DEFINITIONS: ToolDefinition[] = [
 	{
 		name: "escalate_to_human",
 		description:
-			"Escalate the current situation to the human operator and return to idle state. Use for dangerous operations or when you are uncertain.",
+			"Escalate the current situation to the human operator and return to idle state. Use when proceeding autonomously would be riskier than pausing: destructive/irreversible operations, ambiguous user intent, major architectural trade-offs, scope expansion beyond the original request, security-sensitive changes, or production/shared resource modifications.",
 		parameters: {
 			type: "object",
 			properties: {
@@ -254,6 +254,8 @@ export class MainAgent extends EventEmitter<MainAgentEvents> {
 	private stateDetector: StateDetector;
 	private broadcaster: ChatBroadcaster;
 	private messageQueue = new MessageQueue();
+	private pendingUserMessages: string[] = [];
+	private isDrainingUserMessages = false;
 	private paneTarget: string | null = null;
 	private sessionWorkingDir: string = process.cwd();
 	private memoryStore: MemoryStore | null = null;
@@ -331,8 +333,13 @@ export class MainAgent extends EventEmitter<MainAgentEvents> {
 
 	async handleMessage(content: string): Promise<void> {
 		if (this.state === "executing") {
-			// Queue message for injection between tool rounds
-			this.messageQueue.enqueue(content);
+			this.enqueueMessageForExecutingState(content);
+			return;
+		}
+
+		this.pendingUserMessages.push(content);
+
+		if (this.isDrainingUserMessages) {
 			this.broadcaster.broadcast({
 				type: "system",
 				message: "消息已排队，将在当前操作完成后处理",
@@ -340,28 +347,7 @@ export class MainAgent extends EventEmitter<MainAgentEvents> {
 			return;
 		}
 
-		// IDLE state — process immediately
-		this.contextManager.addMessage({ role: "user", content });
-
-		// Stream LLM response
-		const { toolCalls, textContent } = await this.streamLLMResponse();
-
-		if (toolCalls.length > 0) {
-			// LLM wants to use tools — enter EXECUTING state
-			this.setState("executing");
-
-			// Add assistant message to conversation
-			const assistantBlocks = this.buildAssistantBlocks(textContent, toolCalls);
-			this.contextManager.addMessage({ role: "assistant", content: assistantBlocks });
-			this.broadcaster.broadcast({ type: "assistant_done" });
-
-			// Execute tools and enter self-loop
-			await this.executeToolLoop(toolCalls);
-		} else {
-			// Pure text response — stay IDLE
-			this.contextManager.addMessage({ role: "assistant", content: textContent });
-			this.broadcaster.broadcast({ type: "assistant_done" });
-		}
+		await this.drainPendingUserMessages();
 	}
 
 	// ─── Streaming LLM Call ────────────────────────────
@@ -562,27 +548,144 @@ export class MainAgent extends EventEmitter<MainAgentEvents> {
 	async handleResume(): Promise<void> {
 		if (this.state === "executing") return;
 
-		this.contextManager.addMessage({
-			role: "user",
-			content: "[RESUME] 继续执行之前的任务",
-		});
+		try {
+			this.contextManager.addMessage({
+				role: "user",
+				content: "[RESUME] 继续执行之前的任务",
+			});
 
-		this.setState("executing");
+			this.setState("executing");
 
-		const { toolCalls, textContent } = await this.streamLLMResponse();
+			const { toolCalls, textContent } = await this.streamLLMResponse();
 
-		if (toolCalls.length > 0) {
-			const assistantBlocks = this.buildAssistantBlocks(textContent, toolCalls);
-			this.contextManager.addMessage({ role: "assistant", content: assistantBlocks });
-			this.broadcaster.broadcast({ type: "assistant_done" });
-			await this.executeToolLoop(toolCalls);
-		} else {
-			if (textContent) {
-				this.contextManager.addMessage({ role: "assistant", content: textContent });
+			if (toolCalls.length > 0) {
+				const assistantBlocks = this.buildAssistantBlocks(textContent, toolCalls);
+				this.contextManager.addMessage({ role: "assistant", content: assistantBlocks });
+				this.broadcaster.broadcast({ type: "assistant_done" });
+				await this.executeToolLoop(toolCalls);
+			} else {
+				if (textContent) {
+					this.contextManager.addMessage({ role: "assistant", content: textContent });
+				}
+				this.broadcaster.broadcast({ type: "assistant_done" });
+				this.setState("idle");
 			}
-			this.broadcaster.broadcast({ type: "assistant_done" });
+		} catch (err: any) {
+			this.recoverFromExecutionError("handleResume", err);
+			throw err;
+		}
+	}
+
+	private async drainPendingUserMessages(): Promise<void> {
+		if (this.isDrainingUserMessages) return;
+
+		this.isDrainingUserMessages = true;
+		try {
+			while (this.pendingUserMessages.length > 0) {
+				if (this.state === "executing") {
+					this.flushPendingMessagesToExecutionQueue();
+					return;
+				}
+
+				const nextContent = this.pendingUserMessages.shift();
+				if (!nextContent) continue;
+
+				await this.processUserMessage(nextContent);
+			}
+		} finally {
+			this.isDrainingUserMessages = false;
+		}
+	}
+
+	private async processUserMessage(content: string): Promise<void> {
+		try {
+			// IDLE state — process immediately
+			this.contextManager.addMessage({ role: "user", content });
+
+			// Stream LLM response
+			const { toolCalls, textContent } = await this.streamLLMResponse();
+
+			if (toolCalls.length > 0) {
+				// LLM wants to use tools — enter EXECUTING state
+				this.setState("executing");
+				this.flushPendingMessagesToExecutionQueue();
+
+				// Add assistant message to conversation
+				const assistantBlocks = this.buildAssistantBlocks(textContent, toolCalls);
+				this.contextManager.addMessage({ role: "assistant", content: assistantBlocks });
+				this.broadcaster.broadcast({ type: "assistant_done" });
+
+				// Execute tools and enter self-loop
+				await this.executeToolLoop(toolCalls);
+			} else {
+				// Pure text response — stay IDLE
+				this.contextManager.addMessage({ role: "assistant", content: textContent });
+				this.broadcaster.broadcast({ type: "assistant_done" });
+			}
+		} catch (err: any) {
+			this.recoverFromExecutionError("handleMessage", err);
+			throw err;
+		}
+	}
+
+	private enqueueMessageForExecutingState(content: string): void {
+		this.messageQueue.enqueue(content);
+		this.broadcaster.broadcast({
+			type: "system",
+			message: "消息已排队，将在当前操作完成后处理",
+		});
+	}
+
+	private flushPendingMessagesToExecutionQueue(): void {
+		if (this.pendingUserMessages.length === 0) return;
+
+		const pending = this.pendingUserMessages.splice(0);
+		for (const message of pending) {
+			this.messageQueue.enqueue(message);
+		}
+	}
+
+	private recoverFromExecutionError(source: string, err: Error): void {
+		if (this.state === "executing") {
 			this.setState("idle");
 		}
+		logger.error("main-agent", `${source} error: ${err.message}`);
+	}
+
+	private resolveMemoryGetTarget(rawPath: string): { storageDir: string; relativePath: string } {
+		if (!this.memoryStore) {
+			throw new Error("Memory store not available.");
+		}
+
+		const normalizedPath = rawPath.trim().replace(/\\/g, "/").replace(/^\.\//, "");
+		if (normalizedPath.startsWith("memory/")) {
+			return {
+				storageDir: this.memoryStore.getStorageDir(),
+				relativePath: normalizedPath,
+			};
+		}
+
+		const slashIdx = normalizedPath.indexOf("/");
+		if (slashIdx <= 0) {
+			return {
+				storageDir: this.memoryStore.getStorageDir(),
+				relativePath: normalizedPath,
+			};
+		}
+
+		const projectId = normalizedPath.slice(0, slashIdx);
+		const relativePath = normalizedPath.slice(slashIdx + 1);
+		if (!relativePath.startsWith("memory/")) {
+			return {
+				storageDir: this.memoryStore.getStorageDir(),
+				relativePath,
+			};
+		}
+
+		return {
+			storageDir: join(dirname(this.memoryStore.getStorageDir()), projectId),
+			relativePath,
+		};
 	}
 
 	// ─── Helper: build assistant content blocks ────────
@@ -729,17 +832,13 @@ export class MainAgent extends EventEmitter<MainAgentEvents> {
 				if (!this.memoryStore) {
 					return { output: "Memory store not available.", terminal: false };
 				}
-				let memGetPath = args.path as string;
+				const rawPath = args.path as string;
 				const from = args.from as number | undefined;
 				const lineCount = args.lines as number | undefined;
-
-				const slashIdx = memGetPath.indexOf("/");
-				if (slashIdx > 0 && !memGetPath.startsWith("memory/")) {
-					memGetPath = memGetPath.slice(slashIdx + 1);
-				}
+				const { storageDir, relativePath: memGetPath } = this.resolveMemoryGetTarget(rawPath);
 
 				try {
-					const absPath = join(this.memoryStore.getStorageDir(), memGetPath);
+					const absPath = join(storageDir, memGetPath);
 					const content = await readFile(absPath, "utf-8");
 					const lines = content.split("\n");
 
@@ -753,7 +852,7 @@ export class MainAgent extends EventEmitter<MainAgentEvents> {
 					return { output: content, terminal: false };
 				} catch (err: any) {
 					if (err.code === "ENOENT") {
-						return { output: `File not found: ${memGetPath}`, terminal: false };
+						return { output: `File not found: ${rawPath}`, terminal: false };
 					}
 					return { output: `Error reading file: ${err.message}`, terminal: false };
 				}

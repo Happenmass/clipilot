@@ -169,6 +169,14 @@ function toolCallResponse(
 	return events;
 }
 
+function createDeferred() {
+	let resolve!: () => void;
+	const promise = new Promise<void>((res) => {
+		resolve = res;
+	});
+	return { promise, resolve };
+}
+
 // ─── Tests ─────────────────────────────────────────────
 
 describe("MainAgent State Machine", () => {
@@ -250,6 +258,83 @@ describe("MainAgent State Machine", () => {
 			);
 			expect(stateCalls).toContainEqual([{ type: "state", state: "executing" }]);
 			expect(stateCalls).toContainEqual([{ type: "state", state: "idle" }]);
+		});
+
+		it("should serialize concurrent idle messages", async () => {
+			mockCtx = createMockContextManager();
+			mockRouter = createMockSignalRouter();
+			mockBroadcaster = createMockBroadcaster();
+			mockAdapter = createMockAdapter();
+			mockBridge = createMockBridge();
+			mockDetector = createMockStateDetector();
+
+			const firstStreamGate = createDeferred();
+			let callCount = 0;
+			let activeStreams = 0;
+			let maxConcurrentStreams = 0;
+
+			const mockLLM = {
+				stream: vi.fn().mockImplementation(() => {
+					const currentCall = callCount++;
+					const text = currentCall === 0 ? "First reply" : "Second reply";
+
+					return (async function* () {
+						activeStreams++;
+						maxConcurrentStreams = Math.max(maxConcurrentStreams, activeStreams);
+						try {
+							if (currentCall === 0) {
+								await firstStreamGate.promise;
+							}
+							for (const char of text) {
+								yield { type: "text_delta", delta: char } as const;
+							}
+							yield {
+								type: "done" as const,
+								response: {
+									content: text,
+									contentBlocks: [{ type: "text" as const, text }],
+									usage: { inputTokens: 100, outputTokens: 50, totalTokens: 150 },
+									stopReason: "end_turn",
+									model: "test",
+								},
+							};
+						} finally {
+							activeStreams--;
+						}
+					})();
+				}),
+				complete: vi.fn(),
+			};
+
+			const agent = new MainAgent({
+				contextManager: mockCtx,
+				signalRouter: mockRouter,
+				llmClient: mockLLM as any,
+				adapter: mockAdapter,
+				bridge: mockBridge,
+				stateDetector: mockDetector,
+				broadcaster: mockBroadcaster,
+			});
+
+			const firstPromise = agent.handleMessage("first");
+			const secondPromise = agent.handleMessage("second");
+
+			await Promise.resolve();
+			firstStreamGate.resolve();
+
+			await Promise.all([firstPromise, secondPromise]);
+
+			expect(maxConcurrentStreams).toBe(1);
+			expect(mockCtx.addMessage.mock.calls).toEqual([
+				[{ role: "user", content: "first" }],
+				[{ role: "assistant", content: "First reply" }],
+				[{ role: "user", content: "second" }],
+				[{ role: "assistant", content: "Second reply" }],
+			]);
+			expect(mockBroadcaster.broadcast).toHaveBeenCalledWith({
+				type: "system",
+				message: "消息已排队，将在当前操作完成后处理",
+			});
 		});
 	});
 
@@ -407,6 +492,36 @@ describe("MainAgent State Machine", () => {
 			await agent.handleMessage("do task");
 
 			expect(mockCtx.compress).toHaveBeenCalled();
+		});
+	});
+
+	describe("error recovery", () => {
+		it("should recover to idle when handleMessage fails during executing", async () => {
+			const agent = setupAgent([
+				toolCallResponse("fetch_more", { lines: 100 }, "tc1"),
+			]);
+			agent.setPaneTarget("test:0.0");
+
+			mockCtx.shouldRunMemoryFlush.mockReturnValueOnce(false).mockReturnValue(true);
+			mockCtx.runMemoryFlush.mockRejectedValue(new Error("flush failed"));
+
+			await expect(agent.handleMessage("check status")).rejects.toThrow("flush failed");
+			expect(agent.state).toBe("idle");
+			expect(mockBroadcaster.broadcast).toHaveBeenCalledWith({ type: "state", state: "executing" });
+			expect(mockBroadcaster.broadcast).toHaveBeenCalledWith({ type: "state", state: "idle" });
+		});
+
+		it("should recover to idle when handleResume fails", async () => {
+			const agent = setupAgent([
+				toolCallResponse("fetch_more", { lines: 100 }, "tc1"),
+			]);
+			agent.setPaneTarget("test:0.0");
+
+			mockCtx.shouldRunMemoryFlush.mockReturnValue(true);
+			mockCtx.runMemoryFlush.mockRejectedValue(new Error("flush failed"));
+
+			await expect(agent.handleResume()).rejects.toThrow("flush failed");
+			expect(agent.state).toBe("idle");
 		});
 	});
 

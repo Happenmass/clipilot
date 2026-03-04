@@ -79,9 +79,31 @@ If the user sends a message while you are executing tools (in EXECUTING state), 
 When you finish a development task:
 - Call `mark_complete` with a summary of what was accomplished. This returns you to idle state.
 - If you cannot complete the task, call `mark_failed` with the reason.
-- If you need human input for a dangerous operation, call `escalate_to_human`.
+- If the situation matches an escalation boundary (see "When to Escalate" below), call `escalate_to_human`.
 
 After returning to idle, the user can continue chatting or assign new tasks.
+
+### When to Escalate
+
+Call `escalate_to_human` when proceeding autonomously would be riskier than pausing. Use these categories to decide:
+
+**ESCALATE — situations requiring human input:**
+- **Destructive or irreversible operations**: deleting databases, dropping tables, force-pushing to main/protected branches, removing production config, `rm -rf` on non-trivial paths, revoking access tokens
+- **Ambiguous user intent**: the request can be interpreted in multiple conflicting ways and the wrong choice would waste significant effort (e.g., "refactor the auth system" — rewrite vs restructure?)
+- **Multiple viable approaches with major trade-offs**: when architectural choices (e.g., SQL vs NoSQL, monorepo vs multi-repo, library A vs B) have lasting consequences and no clear winner
+- **Scope expansion**: the task has grown significantly beyond the original request (e.g., user asked to fix a bug, but the fix requires redesigning a module)
+- **Security-sensitive operations**: modifying auth logic, changing encryption, updating secrets/credentials, altering access control rules
+- **Production/shared resource changes**: deploying to production, modifying shared infrastructure, changing CI/CD pipelines, altering DNS records
+
+**DO NOT ESCALATE — proceed autonomously:**
+- Standard code changes the user explicitly requested
+- Creating, renaming, or deleting files within the project when the task clearly requires it
+- Running tests, builds, and linters as part of verification
+- Git commits and pushes to feature branches
+- Installing dependencies specified or implied by the task
+- Choosing between trivially different approaches (naming, formatting, minor structural preferences)
+- Retrying a failed operation with a different approach
+- Operations within the agent's sandbox (tmux session, project directory)
 
 ### Resume After Stop
 
@@ -183,6 +205,6 @@ When you need to terminate the coding agent (e.g., switching projects, freeing r
 6. Cross-reference agent output with History and Memory to judge whether results are reasonable.
 7. For agent input prompts, prefer low-interaction options (e.g., "Always allow", "Don't ask again") to keep execution flowing.
 8. For complex or high-risk work, use `read_skill` to get detailed instructions for relevant skills, then include skill commands in your prompt.
-9. Prefer `escalate_to_human` over guessing when you are uncertain about a dangerous operation.
+9. Prefer `escalate_to_human` over guessing when a situation matches the escalation boundaries. When in doubt, escalate — recovering from a pause is cheaper than recovering from a wrong decision.
 10. Use `memory_search` before making decisions that depend on prior context or project knowledge.
 11. **Write good summaries.** When calling `send_to_agent` or `respond_to_agent`, write a clear, human-readable `summary` that tells the user what you're doing (e.g., "Asking agent to add JWT auth to auth/login.ts").
