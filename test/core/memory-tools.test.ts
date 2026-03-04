@@ -77,6 +77,7 @@ function createMockMemoryStore(workspaceDir: string) {
 
 function createAgent(opts: { memoryStore?: any; embeddingProvider?: any } = {}) {
 	const mocks = createMinimalMocks();
+	const broadcaster = { broadcast: vi.fn(), addClient: vi.fn(), removeClient: vi.fn(), getClientCount: vi.fn() } as any;
 
 	return new MainAgent({
 		contextManager: createMockContextManager(),
@@ -85,8 +86,9 @@ function createAgent(opts: { memoryStore?: any; embeddingProvider?: any } = {}) 
 		adapter: mocks.adapter,
 		bridge: mocks.bridge,
 		stateDetector: mocks.stateDetector,
-		goal: "test",
+		broadcaster,
 		memoryStore: opts.memoryStore,
+		syncMemory: (opts as any).syncMemory,
 		embeddingProvider: opts.embeddingProvider,
 	});
 }
@@ -262,6 +264,21 @@ describe("MainAgent memory tools", () => {
 			});
 			expect(result.output).toContain("Written to");
 			expect(result.terminal).toBe(false);
+		});
+
+		it("should trigger sync after a successful memory write", async () => {
+			const mockStore = createMockMemoryStore(tmpDir);
+			const syncMemory = vi.fn().mockResolvedValue(undefined);
+			const agent = createAgent({ memoryStore: mockStore, syncMemory });
+
+			await (agent as any).executeTool({
+				type: "tool_call",
+				id: "tc1",
+				name: "memory_write",
+				arguments: { path: "memory/core.md", content: "\n- New preference" },
+			});
+
+			expect(syncMemory).toHaveBeenCalledOnce();
 		});
 
 		it("should handle write errors gracefully", async () => {

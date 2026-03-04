@@ -35,6 +35,49 @@ import {
 } from "./utils/config.js";
 import { logger } from "./utils/logger.js";
 
+function createMemorySyncRunner(params: {
+	memoryStore: MemoryStore;
+	embeddingProvider: Awaited<ReturnType<typeof createEmbeddingProvider>>["provider"];
+	config: Awaited<ReturnType<typeof loadConfig>>;
+}): () => Promise<void> {
+	let inFlight: Promise<void> | null = null;
+
+	return async () => {
+		if (!params.memoryStore.isDirty()) return;
+		if (inFlight) {
+			await inFlight;
+			return;
+		}
+
+		inFlight = (async () => {
+			if (!params.memoryStore.isDirty()) return;
+			const syncResult = await syncMemoryFiles(params.memoryStore, {
+				chunking: {
+					tokens: params.config.memory.chunkTokens,
+					overlap: params.config.memory.chunkOverlap,
+				},
+				embeddingProvider: params.embeddingProvider,
+				cache: params.embeddingProvider
+					? { provider: params.embeddingProvider.id, model: params.embeddingProvider.model, providerKey: "default" }
+					: undefined,
+			});
+
+			if (syncResult.added + syncResult.updated + syncResult.deleted > 0) {
+				logger.info(
+					"main",
+					`Memory sync: +${syncResult.added} ~${syncResult.updated} -${syncResult.deleted} (${syncResult.chunksIndexed} chunks)`,
+				);
+			}
+		})();
+
+		try {
+			await inFlight;
+		} finally {
+			inFlight = null;
+		}
+	};
+}
+
 async function main(): Promise<void> {
 	const args = parseCliArgs();
 
@@ -190,6 +233,10 @@ async function main(): Promise<void> {
 	// Initial memory index sync
 	try {
 		const syncResult = await syncMemoryFiles(memoryStore, {
+			chunking: {
+				tokens: config.memory.chunkTokens,
+				overlap: config.memory.chunkOverlap,
+			},
 			embeddingProvider,
 			cache: embeddingProvider
 				? { provider: embeddingProvider.id, model: embeddingProvider.model, providerKey: "default" }
@@ -205,8 +252,15 @@ async function main(): Promise<void> {
 		logger.warn("main", `Memory sync failed (non-fatal): ${err.message}`);
 	}
 
+	const syncMemory = createMemorySyncRunner({
+		memoryStore,
+		embeddingProvider,
+		config,
+	});
+
 	console.log(chalk.dim("Agent:    ") + args.agent);
 	console.log(`${chalk.dim("Provider: ")}${llmProvider} (${llmClient.getModel()})`);
+	console.log(`${chalk.dim("Host:     ")}${args.host}`);
 	console.log(`${chalk.dim("Port:     ")}${args.port}`);
 	console.log();
 
@@ -227,6 +281,7 @@ async function main(): Promise<void> {
 		llmClient,
 		promptLoader,
 		memoryStore,
+		syncMemory,
 		flushThreshold: config.memory.flushThreshold,
 		toolResultRetention: config.memory.toolResultRetention,
 		conversationStore,
@@ -283,6 +338,7 @@ async function main(): Promise<void> {
 		stateDetector,
 		broadcaster,
 		memoryStore,
+		syncMemory,
 		embeddingProvider,
 		skillRegistry,
 		debug: config.debug,
@@ -325,6 +381,7 @@ async function main(): Promise<void> {
 	// ─── Start Server ───────────────────────────────────
 
 	const serverInstance = await startServer({
+		host: args.host,
 		port: args.port,
 		mainAgent,
 		signalRouter,

@@ -627,6 +627,43 @@ describe("ContextManager", () => {
 			// Flush should be re-enabled (new compaction cycle)
 			expect(ctx.shouldRunMemoryFlush()).toBe(true);
 		});
+
+		it("should trigger sync after flush writes memory", async () => {
+			const mockStore = { write: vi.fn().mockResolvedValue(undefined), close: vi.fn() } as any;
+			const syncMemory = vi.fn().mockResolvedValue(undefined);
+			const mockLLMWithToolCalls = {
+				...mockLLM,
+				complete: vi.fn().mockResolvedValue({
+					content: "flushed",
+					contentBlocks: [
+						{
+							type: "tool_call",
+							id: "flush-1",
+							name: "memory_write",
+							arguments: { path: "memory/core.md", content: "- persisted memory" },
+						},
+					],
+				}),
+			};
+
+			const ctx = new ContextManager({
+				llmClient: mockLLMWithToolCalls,
+				promptLoader: mockPromptLoader,
+				contextWindowLimit: 200,
+				flushThreshold: 0.3,
+				memoryStore: mockStore,
+				syncMemory,
+			});
+
+			ctx.addMessage({ role: "user", content: "remember this" });
+			await ctx.runMemoryFlush();
+
+			expect(mockStore.write).toHaveBeenCalledWith({
+				path: "memory/core.md",
+				content: "- persisted memory",
+			});
+			expect(syncMemory).toHaveBeenCalledOnce();
+		});
 	});
 
 	describe("threshold invariant", () => {

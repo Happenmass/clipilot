@@ -8,12 +8,14 @@ import type { MainAgent } from "../core/main-agent.js";
 import type { SignalRouter } from "../core/signal-router.js";
 import type { ConversationStore } from "../persistence/conversation-store.js";
 import { logger } from "../utils/logger.js";
+import { buildAuthCookie, createServerAuthToken, isAuthorized } from "./auth.js";
 import type { ChatBroadcaster } from "./chat-broadcaster.js";
 import type { CommandRegistry } from "./command-registry.js";
 import { CommandRouter } from "./command-router.js";
 import { handleWebSocket } from "./ws-handler.js";
 
 export interface ServerOptions {
+	host?: string;
 	port: number;
 	mainAgent: MainAgent;
 	signalRouter: SignalRouter;
@@ -32,10 +34,23 @@ export interface ServerInstance {
  * Create and start the CLIPilot HTTP + WebSocket server.
  */
 export async function startServer(opts: ServerOptions): Promise<ServerInstance> {
-	const { port, mainAgent, signalRouter, contextManager, conversationStore, broadcaster, commandRegistry } = opts;
+	const { host = "127.0.0.1", port, mainAgent, signalRouter, contextManager, conversationStore, broadcaster, commandRegistry } = opts;
 
 	const app = express();
 	app.use(express.json());
+	const authToken = createServerAuthToken();
+
+	app.use((req, res, next) => {
+		if (req.path.startsWith("/api/")) {
+			if (!isAuthorized(req.headers, authToken)) {
+				res.status(401).json({ error: "Unauthorized" });
+				return;
+			}
+		} else if (req.method === "GET" && req.path !== "/favicon.ico") {
+			res.append("Set-Cookie", buildAuthCookie(authToken));
+		}
+		next();
+	});
 
 	// ─── Static files (Chat UI) ─────────────────────────
 	const __dirname = dirname(fileURLToPath(import.meta.url));
@@ -80,7 +95,11 @@ export async function startServer(opts: ServerOptions): Promise<ServerInstance> 
 		commandRegistry,
 	});
 
-	wss.on("connection", (ws: WebSocket) => {
+	wss.on("connection", (ws: WebSocket, req) => {
+		if (!isAuthorized(req.headers, authToken)) {
+			ws.close(1008, "Unauthorized");
+			return;
+		}
 		handleWebSocket(ws, { mainAgent, broadcaster, commandRouter });
 	});
 
@@ -95,12 +114,14 @@ export async function startServer(opts: ServerOptions): Promise<ServerInstance> 
 			}
 		});
 
-		server.listen(port, () => {
-			logger.info("server", `CLIPilot server running at http://localhost:${port}`);
-			console.log(`CLIPilot server running at http://localhost:${port}`);
+		server.listen(port, host, () => {
+			const address = server.address();
+			const actualPort = typeof address === "object" && address ? address.port : port;
+			logger.info("server", `CLIPilot server running at http://${host}:${actualPort}`);
+			console.log(`CLIPilot server running at http://${host}:${actualPort}`);
 
 			resolve({
-				port,
+				port: actualPort,
 				close: async () => {
 					// Close all WebSocket connections
 					for (const client of wss.clients) {

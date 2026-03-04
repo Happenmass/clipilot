@@ -21,6 +21,8 @@ export interface ContextManagerConfig {
 	flushThreshold?: number;
 	/** MemoryStore for flush writes (optional — flush disabled if not provided) */
 	memoryStore?: MemoryStore;
+	/** Optional callback to sync indexed memory after writes. */
+	syncMemory?: () => Promise<void>;
 	/** Number of recent tool results to keep in full. Older results are summarized. Default 20. */
 	toolResultRetention?: number;
 	/** ConversationStore for SQLite persistence (optional — persistence disabled if not provided) */
@@ -47,6 +49,7 @@ export class ContextManager {
 
 	// Memory Flush state
 	private memoryStore: MemoryStore | null;
+	private syncMemory: (() => Promise<void>) | null;
 	private compactionCount = 0;
 	private lastFlushCompactionCount = -1;
 
@@ -61,6 +64,7 @@ export class ContextManager {
 		this.flushThreshold = config.flushThreshold ?? 0.6;
 		this.toolResultRetention = config.toolResultRetention ?? 20;
 		this.memoryStore = config.memoryStore ?? null;
+		this.syncMemory = config.syncMemory ?? null;
 		this.conversationStore = config.conversationStore ?? null;
 
 		// Validate flush < compress invariant
@@ -480,6 +484,7 @@ export class ContextManager {
 
 			// Execute any memory_write tool calls
 			const toolCalls = response.contentBlocks.filter((b): b is ToolCallContent => b.type === "tool_call");
+			let wroteMemory = false;
 
 			for (const call of toolCalls) {
 				if (call.name === "memory_write") {
@@ -487,10 +492,19 @@ export class ContextManager {
 					const content = call.arguments.content as string;
 					try {
 						await this.memoryStore.write({ path, content });
+						wroteMemory = true;
 						logger.info("context-manager", `Flush wrote to ${path}`);
 					} catch (err: any) {
 						logger.warn("context-manager", `Flush write failed: ${err.message}`);
 					}
+				}
+			}
+
+			if (wroteMemory && this.syncMemory) {
+				try {
+					await this.syncMemory();
+				} catch (err: any) {
+					logger.warn("context-manager", `Memory sync after flush failed: ${err.message}`);
 				}
 			}
 		} catch (err: any) {

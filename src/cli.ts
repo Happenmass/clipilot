@@ -7,6 +7,7 @@ export interface CLIArgs {
 	provider: string | undefined;
 	model: string | undefined;
 	baseUrl: string | undefined;
+	host: string;
 	port: number;
 	listProviders: boolean;
 	help: boolean;
@@ -23,6 +24,7 @@ export function parseCliArgs(): CLIArgs {
 			provider: { type: "string", short: "p" },
 			model: { type: "string", short: "m" },
 			"base-url": { type: "string" },
+			host: { type: "string", default: "127.0.0.1" },
 			port: { type: "string", default: "3120" },
 			"list-providers": { type: "boolean", default: false },
 			help: { type: "boolean", short: "h", default: false },
@@ -44,6 +46,7 @@ export function parseCliArgs(): CLIArgs {
 		provider: values.provider as string | undefined,
 		model: values.model as string | undefined,
 		baseUrl: values["base-url"] as string | undefined,
+		host: values.host as string,
 		port: Number.parseInt(values.port as string, 10) || 3120,
 		listProviders: values["list-providers"] as boolean,
 		help: values.help as boolean,
@@ -76,6 +79,7 @@ Options:
                                     deepseek, groq, together, xai, gemini, mistral, ollama
   -m, --model <id>        LLM model ID (default: provider's default)
   --base-url <url>        Custom API base URL (for self-hosted or custom endpoints)
+  --host <host>           Bind address for the HTTP/WebSocket server (default: 127.0.0.1)
   --port <number>         Server port (default: 3120)
   --list-providers        List all available LLM providers
   --cwd <path>            Working directory (default: current)
@@ -84,6 +88,7 @@ Options:
 
 Examples:
   clipilot                                            # Start server on default port
+  clipilot --host 0.0.0.0 --port 3120                 # Expose server on all interfaces
   clipilot --port 8080                                # Start server on port 8080
   clipilot -p openai -m gpt-4o                        # Start with specific LLM
   clipilot remember "This project uses PostgreSQL"    # Save a memory note

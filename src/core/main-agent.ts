@@ -259,6 +259,7 @@ export class MainAgent extends EventEmitter<MainAgentEvents> {
 	private paneTarget: string | null = null;
 	private sessionWorkingDir: string = process.cwd();
 	private memoryStore: MemoryStore | null = null;
+	private syncMemory: (() => Promise<void>) | null = null;
 	private embeddingProvider: EmbeddingProvider | null = null;
 	private skillRegistry: SkillRegistry | null = null;
 	private debug: boolean;
@@ -284,6 +285,7 @@ export class MainAgent extends EventEmitter<MainAgentEvents> {
 		stateDetector: StateDetector;
 		broadcaster: ChatBroadcaster;
 		memoryStore?: MemoryStore;
+		syncMemory?: () => Promise<void>;
 		embeddingProvider?: EmbeddingProvider | null;
 		searchConfig?: Partial<HybridSearchConfig>;
 		skillRegistry?: SkillRegistry;
@@ -298,6 +300,7 @@ export class MainAgent extends EventEmitter<MainAgentEvents> {
 		this.stateDetector = opts.stateDetector;
 		this.broadcaster = opts.broadcaster;
 		this.memoryStore = opts.memoryStore ?? null;
+		this.syncMemory = opts.syncMemory ?? null;
 		this.embeddingProvider = opts.embeddingProvider ?? null;
 		this.skillRegistry = opts.skillRegistry ?? null;
 		this.debug = opts.debug ?? false;
@@ -316,6 +319,19 @@ export class MainAgent extends EventEmitter<MainAgentEvents> {
 
 	getSessionWorkingDir(): string {
 		return this.sessionWorkingDir;
+	}
+
+	async waitForIdle(): Promise<void> {
+		if (this.state === "idle") return;
+
+		await new Promise<void>((resolve) => {
+			const onStateChange = (state: AgentState) => {
+				if (state !== "idle") return;
+				this.off("state_change", onStateChange);
+				resolve();
+			};
+			this.on("state_change", onStateChange);
+		});
 	}
 
 	// ─── State Management ──────────────────────────────
@@ -867,6 +883,16 @@ export class MainAgent extends EventEmitter<MainAgentEvents> {
 
 				try {
 					const result = await this.memoryStore.write({ path, content });
+					if (this.syncMemory) {
+						try {
+							await this.syncMemory();
+						} catch (err: any) {
+							return {
+								output: `Written to ${result.path} successfully. Warning: memory sync failed: ${err.message}`,
+								terminal: false,
+							};
+						}
+					}
 					return { output: `Written to ${result.path} successfully.`, terminal: false };
 				} catch (err: any) {
 					return { output: `Memory write error: ${err.message}`, terminal: false };

@@ -1,0 +1,131 @@
+import { afterEach, describe, expect, it } from "vitest";
+import { WebSocket } from "ws";
+import { startServer, type ServerInstance } from "../../src/server/index.js";
+import { CommandRegistry } from "../../src/server/command-registry.js";
+
+function createMainAgentMock() {
+	return {
+		state: "idle" as const,
+		handleMessage: async () => undefined,
+		handleResume: async () => undefined,
+		waitForIdle: async () => undefined,
+	} as any;
+}
+
+function createContextManagerMock() {
+	return {
+		clear: async () => undefined,
+	} as any;
+}
+
+function createSignalRouterMock() {
+	return {
+		stop: () => undefined,
+		resume: () => undefined,
+		isStopRequested: () => false,
+	} as any;
+}
+
+function createConversationStoreMock() {
+	return {
+		loadMessages: () => [],
+		getMessageCount: () => 0,
+	} as any;
+}
+
+function createBroadcasterMock() {
+	return {
+		addClient: () => undefined,
+		removeClient: () => undefined,
+		broadcast: () => undefined,
+		getClientCount: () => 0,
+	} as any;
+}
+
+function getCookieHeader(response: Response): string {
+	const cookie = response.headers.get("set-cookie");
+	if (!cookie) {
+		throw new Error("Expected Set-Cookie header");
+	}
+	return cookie.split(";")[0];
+}
+
+function waitForWsClose(ws: WebSocket): Promise<number> {
+	return new Promise((resolve, reject) => {
+		ws.once("close", (code) => resolve(code));
+		ws.once("error", reject);
+	});
+}
+
+function waitForWsMessage(ws: WebSocket): Promise<string> {
+	return new Promise((resolve, reject) => {
+		ws.once("message", (data) => resolve(data.toString()));
+		ws.once("error", reject);
+	});
+}
+
+describe("startServer", () => {
+	let server: ServerInstance | null = null;
+
+	afterEach(async () => {
+		if (server) {
+			await server.close();
+			server = null;
+		}
+	});
+
+	it("should require auth cookie for API endpoints", async () => {
+		server = await startServer({
+			host: "127.0.0.1",
+			port: 0,
+			mainAgent: createMainAgentMock(),
+			signalRouter: createSignalRouterMock(),
+			contextManager: createContextManagerMock(),
+			conversationStore: createConversationStoreMock(),
+			broadcaster: createBroadcasterMock(),
+			commandRegistry: new CommandRegistry(),
+		});
+
+		const unauthorized = await fetch(`http://127.0.0.1:${server.port}/api/status`);
+		expect(unauthorized.status).toBe(401);
+
+		const landing = await fetch(`http://127.0.0.1:${server.port}/`);
+		expect(landing.status).toBe(200);
+		const cookie = getCookieHeader(landing);
+
+		const authorized = await fetch(`http://127.0.0.1:${server.port}/api/status`, {
+			headers: { Cookie: cookie },
+		});
+		expect(authorized.status).toBe(200);
+		expect(await authorized.json()).toEqual({
+			state: "idle",
+			messageCount: 0,
+			clients: 0,
+		});
+	});
+
+	it("should require auth cookie for websocket connections", async () => {
+		server = await startServer({
+			host: "127.0.0.1",
+			port: 0,
+			mainAgent: createMainAgentMock(),
+			signalRouter: createSignalRouterMock(),
+			contextManager: createContextManagerMock(),
+			conversationStore: createConversationStoreMock(),
+			broadcaster: createBroadcasterMock(),
+			commandRegistry: new CommandRegistry(),
+		});
+
+		const unauthorizedWs = new WebSocket(`ws://127.0.0.1:${server.port}/ws`);
+		await expect(waitForWsClose(unauthorizedWs)).resolves.toBe(1008);
+
+		const landing = await fetch(`http://127.0.0.1:${server.port}/`);
+		const cookie = getCookieHeader(landing);
+		const authorizedWs = new WebSocket(`ws://127.0.0.1:${server.port}/ws`, {
+			headers: { Cookie: cookie },
+		});
+
+		await expect(waitForWsMessage(authorizedWs)).resolves.toBe(JSON.stringify({ type: "state", state: "idle" }));
+		authorizedWs.close();
+	});
+});

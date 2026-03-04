@@ -83,8 +83,7 @@ export class CommandRouter {
 		// Stop first if executing
 		if (this.mainAgent.state === "executing") {
 			this.signalRouter.stop();
-			// Wait briefly for the loop to exit
-			await new Promise((resolve) => setTimeout(resolve, 200));
+			await this.mainAgent.waitForIdle();
 		}
 
 		// Clear context (runs memory flush → clears memory → clears SQLite)

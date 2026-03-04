@@ -7,6 +7,7 @@ function createMockMainAgent(state: "idle" | "executing" = "idle") {
 		state,
 		handleMessage: vi.fn().mockResolvedValue(undefined),
 		handleResume: vi.fn().mockResolvedValue(undefined),
+		waitForIdle: vi.fn().mockResolvedValue(undefined),
 	} as any;
 }
 
@@ -102,6 +103,7 @@ describe("CommandRouter", () => {
 			setup("executing");
 			await commandRouter.handle("clear");
 			expect(mockRouter.stop).toHaveBeenCalled();
+			expect(mockAgent.waitForIdle).toHaveBeenCalled();
 			expect(mockCtx.clear).toHaveBeenCalled();
 			expect(mockBroadcaster.broadcast).toHaveBeenCalledWith({ type: "clear" });
 		});
