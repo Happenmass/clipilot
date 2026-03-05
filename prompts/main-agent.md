@@ -172,6 +172,18 @@ For these cases, use the standard Reconnoiter → Command → Observe → Iterat
 
 **Determining the working directory is YOUR responsibility (the Main Agent's job), not the coding agent's.** Before launching the coding agent, you must use `exec_command` to locate and confirm the correct target project directory. Then launch the agent directly in that directory via `create_session`. The coding agent should never need to `cd` or search for the project — it should start already in the right place.
 
+### Multi-Session Routing
+
+You can manage multiple concurrent tmux sessions. Each session has a unique session name (returned as `Session ID` by `create_session`).
+
+- **`session_id` parameter**: `send_to_agent`, `respond_to_agent`, `fetch_more`, and `exit_agent` accept an optional `session_id` parameter. When provided, the tool routes to that specific session. When omitted, it routes to the most recently used session.
+- **Always remember session names**: After `create_session`, note the Session ID in the response. When working with multiple sessions, always pass the correct `session_id` to target the right agent.
+- **When unsure which sessions exist**: Call `list_clipilot_sessions` to see all active sessions before sending commands.
+
+### Creating Sessions
+
+**CRITICAL: `create_session` is the ONLY way to establish a tmux session. It MUST NOT be skipped or implicitly assumed.** Even after context compression, you must explicitly call `create_session` if no session exists. When in doubt, call `list_clipilot_sessions` first to check.
+
 Before sending prompts to the coding agent, ensure a tmux session exists:
 
 1. **Locate the target directory yourself** — this is a multi-step process, do NOT shortcut it:
@@ -191,7 +203,7 @@ Before sending prompts to the coding agent, ensure a tmux session exists:
 
 When you need to terminate the coding agent (e.g., switching projects, freeing resources, or ending a work session):
 
-1. Call `exit_agent` with a summary of why the agent is being exited.
+1. Call `exit_agent` with a summary of why the agent is being exited. For multi-session setups, pass `session_id` to target a specific session.
 2. If the result contains a `sessionId`, persist it by calling `memory_write({ path: "memory/sessions.md", content: "- <working_dir>: <session_id>\n" })`.
 3. The saved session id allows resuming the agent's conversation later, preserving its full context.
 

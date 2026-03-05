@@ -34,6 +34,11 @@ import type { Signal, SignalRouter } from "./signal-router.js";
 
 export type AgentState = "idle" | "executing";
 
+export interface SessionEntry {
+	paneTarget: string;
+	workingDir: string;
+}
+
 export interface MainAgentEvents {
 	state_change: [state: AgentState];
 	log: [message: string];
@@ -47,7 +52,7 @@ const TOOL_DEFINITIONS: ToolDefinition[] = [
 	{
 		name: "send_to_agent",
 		description:
-			"Send an instruction prompt to the coding agent and wait for the agent to finish. Returns the agent's final status and pane content. This tool blocks until the agent completes, encounters an error, or times out.",
+			"Send an instruction prompt to the coding agent and wait for the agent to finish. Returns the agent's final status and pane content. This tool blocks until the agent completes, encounters an error, or times out. If session_id is omitted, routes to the most recently used session.",
 		parameters: {
 			type: "object",
 			properties: {
@@ -57,6 +62,10 @@ const TOOL_DEFINITIONS: ToolDefinition[] = [
 					description:
 						"A brief human-readable summary of the current action for the chat interface (e.g., 'Asking agent to add JWT auth to auth/login.ts')",
 				},
+				session_id: {
+					type: "string",
+					description: "Target session name. If omitted, routes to the active session.",
+				},
 			},
 			required: ["prompt", "summary"],
 		},
@@ -64,7 +73,7 @@ const TOOL_DEFINITIONS: ToolDefinition[] = [
 	{
 		name: "respond_to_agent",
 		description:
-			"Respond to an agent waiting for input and wait for the agent to finish. Formats: 'Enter', 'Escape', 'y', 'n', 'arrow:down:N', 'keys:K1,K2,...', or plain text. Returns the agent's final status and pane content after it settles.",
+			"Respond to an agent waiting for input and wait for the agent to finish. Formats: 'Enter', 'Escape', 'y', 'n', 'arrow:down:N', 'keys:K1,K2,...', or plain text. Returns the agent's final status and pane content after it settles. If session_id is omitted, routes to the most recently used session.",
 		parameters: {
 			type: "object",
 			properties: {
@@ -74,6 +83,10 @@ const TOOL_DEFINITIONS: ToolDefinition[] = [
 					description:
 						"A brief human-readable summary of this response for the chat interface (e.g., 'Confirming dependency installation')",
 				},
+				session_id: {
+					type: "string",
+					description: "Target session name. If omitted, routes to the active session.",
+				},
 			},
 			required: ["value", "summary"],
 		},
@@ -81,11 +94,15 @@ const TOOL_DEFINITIONS: ToolDefinition[] = [
 	{
 		name: "fetch_more",
 		description:
-			"Fetch more lines from the tmux pane to see additional output history. Only use this AFTER the agent has finished working (i.e., after send_to_agent or respond_to_agent has returned), when the returned content is clearly truncated or missing earlier context. Do NOT use this to poll for agent progress.",
+			"Fetch more lines from the tmux pane to see additional output history. Only use this AFTER the agent has finished working (i.e., after send_to_agent or respond_to_agent has returned), when the returned content is clearly truncated or missing earlier context. Do NOT use this to poll for agent progress. If session_id is omitted, routes to the most recently used session.",
 		parameters: {
 			type: "object",
 			properties: {
 				lines: { type: "number", description: "Number of lines to capture (e.g. 200, 300, 500)" },
+				session_id: {
+					type: "string",
+					description: "Target session name. If omitted, routes to the active session.",
+				},
 			},
 			required: ["lines"],
 		},
@@ -214,7 +231,7 @@ const TOOL_DEFINITIONS: ToolDefinition[] = [
 	{
 		name: "exit_agent",
 		description:
-			"Exit the current coding agent process. Returns the captured tmux output and a session id (if available) that can be used to resume the agent later with --resume. Use this when you need to terminate the agent cleanly.",
+			"Exit a coding agent process. Returns the captured tmux output and a session id (if available) that can be used to resume the agent later with --resume. Use this when you need to terminate the agent cleanly. If session_id is omitted, exits the active session.",
 		parameters: {
 			type: "object",
 			properties: {
@@ -222,6 +239,10 @@ const TOOL_DEFINITIONS: ToolDefinition[] = [
 					type: "string",
 					description:
 						"A brief human-readable summary of why the agent is being exited (e.g., 'Exiting agent to save session for later')",
+				},
+				session_id: {
+					type: "string",
+					description: "Target session name to exit. If omitted, exits the active session.",
 				},
 			},
 			required: ["summary"],
@@ -270,8 +291,8 @@ export class MainAgent extends EventEmitter<MainAgentEvents> {
 	private messageQueue = new MessageQueue();
 	private pendingUserMessages: string[] = [];
 	private isDrainingUserMessages = false;
-	private paneTarget: string | null = null;
-	private sessionWorkingDir: string = process.cwd();
+	private sessions: Map<string, SessionEntry> = new Map();
+	private activeSessionId: string | null = null;
 	private memoryStore: MemoryStore | null = null;
 	private syncMemory: (() => Promise<void>) | null = null;
 	private embeddingProvider: EmbeddingProvider | null = null;
@@ -327,16 +348,33 @@ export class MainAgent extends EventEmitter<MainAgentEvents> {
 		}
 	}
 
-	setPaneTarget(paneTarget: string): void {
-		this.paneTarget = paneTarget;
+	setPaneTarget(paneTarget: string, sessionId = "_default"): void {
+		this.sessions.set(sessionId, { paneTarget, workingDir: process.cwd() });
+		this.activeSessionId = sessionId;
 	}
 
 	getPaneTarget(): string | null {
-		return this.paneTarget;
+		if (!this.activeSessionId) return null;
+		return this.sessions.get(this.activeSessionId)?.paneTarget ?? null;
 	}
 
 	getSessionWorkingDir(): string {
-		return this.sessionWorkingDir;
+		if (!this.activeSessionId) return process.cwd();
+		return this.sessions.get(this.activeSessionId)?.workingDir ?? process.cwd();
+	}
+
+	private resolveSession(sessionId?: string): { entry: SessionEntry; id: string } | { error: string } {
+		const id = sessionId ?? this.activeSessionId;
+		if (!id) {
+			return { error: "No active session. Call create_session first." };
+		}
+		const entry = this.sessions.get(id);
+		if (!entry) {
+			return {
+				error: `Session "${id}" not found. Use list_clipilot_sessions to see available sessions.`,
+			};
+		}
+		return { entry, id };
 	}
 
 	async waitForIdle(): Promise<void> {
@@ -730,11 +768,12 @@ export class MainAgent extends EventEmitter<MainAgentEvents> {
 		return snippet;
 	}
 
-	private async captureAnsiPaneContent(maxLines = 40): Promise<string | undefined> {
-		if (!this.paneTarget) return undefined;
+	private async captureAnsiPaneContent(paneTarget?: string, maxLines = 40): Promise<string | undefined> {
+		const target = paneTarget ?? this.getPaneTarget();
+		if (!target) return undefined;
 
 		try {
-			const capture = await this.bridge.capturePane(this.paneTarget, {
+			const capture = await this.bridge.capturePane(target, {
 				startLine: -maxLines,
 				escapeSequences: true,
 			});
@@ -949,9 +988,13 @@ export class MainAgent extends EventEmitter<MainAgentEvents> {
 
 		switch (name) {
 			case "send_to_agent": {
-				if (!this.paneTarget) {
-					return { output: "Error: No active session. Call create_session first.", terminal: false };
+				const resolved = this.resolveSession(args.session_id as string | undefined);
+				if ("error" in resolved) {
+					return { output: `Error: ${resolved.error}`, terminal: false };
 				}
+				const { entry: sendSession, id: sendSessionId } = resolved;
+				this.activeSessionId = sendSessionId;
+
 				const prompt = args.prompt as string;
 				const summary = args.summary as string;
 				const runId = this.createExecutionRunId(name);
@@ -964,23 +1007,23 @@ export class MainAgent extends EventEmitter<MainAgentEvents> {
 					toolName: name,
 					summary,
 					workspace: {
-						workingDir: this.sessionWorkingDir,
+						workingDir: sendSession.workingDir,
 						available: false,
 						changedFiles: [],
 					},
 				});
 
-				const sendPreHash = await this.stateDetector.captureHash(this.paneTarget);
-				await this.adapter.sendPrompt(this.bridge, this.paneTarget, prompt);
+				const sendPreHash = await this.stateDetector.captureHash(sendSession.paneTarget);
+				await this.adapter.sendPrompt(this.bridge, sendSession.paneTarget, prompt);
 				this.signalRouter.notifyPromptSent(prompt);
-				const sendResult = await this.stateDetector.waitForSettled(this.paneTarget, "", {
+				const sendResult = await this.stateDetector.waitForSettled(sendSession.paneTarget, "", {
 					preHash: sendPreHash,
 					isAborted: () => this.signalRouter.isStopRequested(),
 				});
 				const sendStatus = sendResult.timedOut ? "timeout" : sendResult.analysis.status;
-				const ansiContent = await this.captureAnsiPaneContent();
+				const ansiContent = await this.captureAnsiPaneContent(sendSession.paneTarget);
 				const pane = this.buildPaneSnippet(sendResult.content, ansiContent);
-				const workspace = await this.collectWorkspaceEvidence(this.sessionWorkingDir);
+				const workspace = await this.collectWorkspaceEvidence(sendSession.workingDir);
 				const test = this.extractTestEvidence(sendResult.content);
 				this.emitExecutionEvent({
 					runId,
@@ -999,9 +1042,13 @@ export class MainAgent extends EventEmitter<MainAgentEvents> {
 			}
 
 			case "respond_to_agent": {
-				if (!this.paneTarget) {
-					return { output: "Error: No active session. Call create_session first.", terminal: false };
+				const resolved = this.resolveSession(args.session_id as string | undefined);
+				if ("error" in resolved) {
+					return { output: `Error: ${resolved.error}`, terminal: false };
 				}
+				const { entry: respondSession, id: respondSessionId } = resolved;
+				this.activeSessionId = respondSessionId;
+
 				const value = args.value as string;
 				const summary = args.summary as string;
 				const runId = this.createExecutionRunId(name);
@@ -1014,22 +1061,22 @@ export class MainAgent extends EventEmitter<MainAgentEvents> {
 					toolName: name,
 					summary,
 					workspace: {
-						workingDir: this.sessionWorkingDir,
+						workingDir: respondSession.workingDir,
 						available: false,
 						changedFiles: [],
 					},
 				});
 
-				const respondPreHash = await this.stateDetector.captureHash(this.paneTarget);
-				await this.adapter.sendResponse(this.bridge, this.paneTarget, value);
-				const respondResult = await this.stateDetector.waitForSettled(this.paneTarget, "", {
+				const respondPreHash = await this.stateDetector.captureHash(respondSession.paneTarget);
+				await this.adapter.sendResponse(this.bridge, respondSession.paneTarget, value);
+				const respondResult = await this.stateDetector.waitForSettled(respondSession.paneTarget, "", {
 					preHash: respondPreHash,
 					isAborted: () => this.signalRouter.isStopRequested(),
 				});
 				const respondStatus = respondResult.timedOut ? "timeout" : respondResult.analysis.status;
-				const ansiContent = await this.captureAnsiPaneContent();
+				const ansiContent = await this.captureAnsiPaneContent(respondSession.paneTarget);
 				const pane = this.buildPaneSnippet(respondResult.content, ansiContent);
-				const workspace = await this.collectWorkspaceEvidence(this.sessionWorkingDir);
+				const workspace = await this.collectWorkspaceEvidence(respondSession.workingDir);
 				const test = this.extractTestEvidence(respondResult.content);
 				this.emitExecutionEvent({
 					runId,
@@ -1048,11 +1095,12 @@ export class MainAgent extends EventEmitter<MainAgentEvents> {
 			}
 
 			case "fetch_more": {
-				if (!this.paneTarget) {
-					return { output: "Error: No active session. Call create_session first.", terminal: false };
+				const resolved = this.resolveSession(args.session_id as string | undefined);
+				if ("error" in resolved) {
+					return { output: `Error: ${resolved.error}`, terminal: false };
 				}
 				const lines = args.lines as number;
-				const capture = await this.bridge.capturePane(this.paneTarget, { startLine: -lines });
+				const capture = await this.bridge.capturePane(resolved.entry.paneTarget, { startLine: -lines });
 				return { output: capture.content, terminal: false };
 			}
 
@@ -1172,7 +1220,7 @@ export class MainAgent extends EventEmitter<MainAgentEvents> {
 						toolName: name,
 						summary: `Wrote ${result.path}`,
 						workspace: {
-							workingDir: this.sessionWorkingDir,
+							workingDir: this.getSessionWorkingDir(),
 							available: false,
 							changedFiles: [],
 						},
@@ -1238,11 +1286,12 @@ export class MainAgent extends EventEmitter<MainAgentEvents> {
 							changedFiles: [],
 						},
 					});
-					this.paneTarget = await this.adapter.launch(this.bridge, {
+					const paneTarget = await this.adapter.launch(this.bridge, {
 						workingDir,
 						sessionName,
 					});
-					this.sessionWorkingDir = workingDir;
+					this.sessions.set(sessionName, { paneTarget, workingDir });
+					this.activeSessionId = sessionName;
 					this.stateDetector.setCharacteristics(this.adapter.getCharacteristics());
 					const workspace = await this.collectWorkspaceEvidence(workingDir);
 					this.emitExecutionEvent({
@@ -1255,10 +1304,10 @@ export class MainAgent extends EventEmitter<MainAgentEvents> {
 					});
 					logger.info(
 						"main-agent",
-						`Session created: ${sessionName}, pane: ${this.paneTarget}, cwd: ${workingDir}`,
+						`Session created: ${sessionName}, pane: ${paneTarget}, cwd: ${workingDir}`,
 					);
 					return {
-						output: `Session "${sessionName}" created in ${workingDir}. Agent launched in ${this.paneTarget}. You can now use send_to_agent.`,
+						output: `Session "${sessionName}" created in ${workingDir}. Session ID: "${sessionName}". Agent launched in ${paneTarget}. You can now use send_to_agent.`,
 						terminal: false,
 					};
 				} catch (err: any) {
@@ -1282,9 +1331,12 @@ export class MainAgent extends EventEmitter<MainAgentEvents> {
 			}
 
 			case "exit_agent": {
-				if (!this.paneTarget) {
-					return { output: "Error: No active session.", terminal: false };
+				const resolved = this.resolveSession(args.session_id as string | undefined);
+				if ("error" in resolved) {
+					return { output: `Error: ${resolved.error}`, terminal: false };
 				}
+				const { entry: exitSession, id: exitSessionId } = resolved;
+
 				const exitSummary = args.summary as string;
 				const runId = this.createExecutionRunId(name);
 				this.emitUiEvent("agent_update", exitSummary);
@@ -1294,7 +1346,7 @@ export class MainAgent extends EventEmitter<MainAgentEvents> {
 					toolName: name,
 					summary: exitSummary,
 					workspace: {
-						workingDir: this.sessionWorkingDir,
+						workingDir: exitSession.workingDir,
 						available: false,
 						changedFiles: [],
 					},
@@ -1304,10 +1356,10 @@ export class MainAgent extends EventEmitter<MainAgentEvents> {
 					return { output: "Error: Current adapter does not support exitAgent.", terminal: false };
 				}
 
-				const exitResult = await this.adapter.exitAgent(this.bridge, this.paneTarget);
-				const ansiContent = await this.captureAnsiPaneContent();
+				const exitResult = await this.adapter.exitAgent(this.bridge, exitSession.paneTarget);
+				const ansiContent = await this.captureAnsiPaneContent(exitSession.paneTarget);
 				const pane = this.buildPaneSnippet(exitResult.content, ansiContent);
-				const workspace = await this.collectWorkspaceEvidence(this.sessionWorkingDir);
+				const workspace = await this.collectWorkspaceEvidence(exitSession.workingDir);
 				const test = this.extractTestEvidence(exitResult.content);
 				this.emitExecutionEvent({
 					runId,
@@ -1330,10 +1382,18 @@ export class MainAgent extends EventEmitter<MainAgentEvents> {
 						sessionResumable: Boolean(exitResult.sessionId),
 					}),
 				});
+
+				// Remove session from registry and update activeSessionId
+				this.sessions.delete(exitSessionId);
+				if (this.activeSessionId === exitSessionId) {
+					const remaining = [...this.sessions.keys()];
+					this.activeSessionId = remaining.length > 0 ? remaining[remaining.length - 1] : null;
+				}
+
 				const parts = [`[Agent exited]\n${exitResult.content}`];
 				if (exitResult.sessionId) {
 					parts.push(`\nSession ID: ${exitResult.sessionId}`);
-					parts.push(`Working directory: ${this.sessionWorkingDir}`);
+					parts.push(`Working directory: ${exitSession.workingDir}`);
 				}
 				return { output: parts.join("\n"), terminal: false };
 			}
@@ -1341,7 +1401,7 @@ export class MainAgent extends EventEmitter<MainAgentEvents> {
 			case "exec_command": {
 				const command = args.command as string;
 				const execSummary = args.summary as string;
-				const cwd = (args.cwd as string | undefined) ?? this.sessionWorkingDir;
+				const cwd = (args.cwd as string | undefined) ?? this.getSessionWorkingDir();
 				const timeout = (args.timeout as number | undefined) ?? 30000;
 				const MAX_OUTPUT = 10000;
 

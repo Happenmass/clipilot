@@ -751,4 +751,180 @@ describe("MainAgent State Machine", () => {
 			expect(toolActivityCalls[1][0].summary).toBe("第二轮查看");
 		});
 	});
+
+	describe("multi-session routing", () => {
+		it("should register session and set activeSessionId on create_session", async () => {
+			const agent = setupAgent([
+				toolCallResponse("create_session", { session_name: "backend" }),
+				textResponse("Session created."),
+			]);
+
+			await agent.handleMessage("create backend session");
+
+			expect(mockAdapter.launch).toHaveBeenCalled();
+			// Verify the return output contains Session ID
+			const addMessageCalls = mockCtx.addMessage.mock.calls;
+			const toolResultMsg = addMessageCalls.find(
+				(c: any) => c[0].role === "tool" && typeof c[0].content === "string" && c[0].content.includes("Session ID"),
+			);
+			expect(toolResultMsg).toBeTruthy();
+		});
+
+		it("should support multiple sessions and route send_to_agent by session_id", async () => {
+			// Create two sessions, then send to the first one by session_id
+			const agent = setupAgent([
+				toolCallResponse("create_session", { session_name: "backend" }, "tc1"),
+				toolCallResponse("create_session", { session_name: "frontend" }, "tc2"),
+				toolCallResponse("send_to_agent", { prompt: "test", summary: "test", session_id: "clipilot-backend" }, "tc3"),
+				textResponse("Done."),
+			]);
+
+			// Adapter returns different pane targets for each session
+			mockAdapter.launch
+				.mockResolvedValueOnce("clipilot-backend:0.0")
+				.mockResolvedValueOnce("clipilot-frontend:0.0");
+
+			await agent.handleMessage("multi session task");
+
+			// send_to_agent should have targeted clipilot-backend's pane
+			expect(mockAdapter.sendPrompt).toHaveBeenCalledWith(mockBridge, "clipilot-backend:0.0", "test");
+		});
+
+		it("should route to active session when session_id is omitted", async () => {
+			const agent = setupAgent([
+				toolCallResponse("create_session", { session_name: "backend" }, "tc1"),
+				toolCallResponse("send_to_agent", { prompt: "test", summary: "test" }, "tc2"),
+				textResponse("Done."),
+			]);
+
+			mockAdapter.launch.mockResolvedValueOnce("clipilot-backend:0.0");
+
+			await agent.handleMessage("send to active");
+
+			expect(mockAdapter.sendPrompt).toHaveBeenCalledWith(mockBridge, "clipilot-backend:0.0", "test");
+		});
+
+		it("should return error for non-existent session_id", async () => {
+			const agent = setupAgent([
+				toolCallResponse("create_session", { session_name: "backend" }, "tc1"),
+				toolCallResponse("send_to_agent", { prompt: "test", summary: "test", session_id: "nonexistent" }, "tc2"),
+				textResponse("Error handled."),
+			]);
+
+			await agent.handleMessage("send to wrong session");
+
+			// sendPrompt should NOT have been called for the second tool call
+			expect(mockAdapter.sendPrompt).not.toHaveBeenCalled();
+		});
+
+		it("should return error when no active session exists", async () => {
+			const agent = setupAgent([
+				toolCallResponse("send_to_agent", { prompt: "test", summary: "test" }, "tc1"),
+				textResponse("No session."),
+			]);
+
+			await agent.handleMessage("send without session");
+
+			expect(mockAdapter.sendPrompt).not.toHaveBeenCalled();
+		});
+
+		it("should remove session from registry on exit_agent", async () => {
+			const agent = setupAgent([
+				toolCallResponse("create_session", { session_name: "backend" }, "tc1"),
+				toolCallResponse("create_session", { session_name: "frontend" }, "tc2"),
+				toolCallResponse("exit_agent", { summary: "exit frontend", session_id: "clipilot-frontend" }, "tc3"),
+				// After exit, send to remaining session without session_id
+				toolCallResponse("send_to_agent", { prompt: "continue", summary: "continue" }, "tc4"),
+				textResponse("Done."),
+			]);
+
+			mockAdapter.launch
+				.mockResolvedValueOnce("clipilot-backend:0.0")
+				.mockResolvedValueOnce("clipilot-frontend:0.0");
+			mockAdapter.exitAgent = vi.fn().mockResolvedValue({ content: "exited", sessionId: null });
+
+			await agent.handleMessage("exit and continue");
+
+			// exit_agent should have been called on frontend's pane
+			expect(mockAdapter.exitAgent).toHaveBeenCalledWith(mockBridge, "clipilot-frontend:0.0");
+			// send_to_agent should route to backend (the remaining session)
+			expect(mockAdapter.sendPrompt).toHaveBeenCalledWith(mockBridge, "clipilot-backend:0.0", "continue");
+		});
+
+		it("should set activeSessionId to null when last session is exited", async () => {
+			const agent = setupAgent([
+				toolCallResponse("create_session", { session_name: "only" }, "tc1"),
+				toolCallResponse("exit_agent", { summary: "exit only" }, "tc2"),
+				// Now try send_to_agent — should fail with no active session
+				toolCallResponse("send_to_agent", { prompt: "test", summary: "test" }, "tc3"),
+				textResponse("Done."),
+			]);
+
+			mockAdapter.exitAgent = vi.fn().mockResolvedValue({ content: "exited", sessionId: null });
+
+			await agent.handleMessage("exit all");
+
+			// send_to_agent should not have been called since no sessions remain
+			expect(mockAdapter.sendPrompt).not.toHaveBeenCalled();
+		});
+
+		it("should not change activeSessionId when exiting a non-active session", async () => {
+			const agent = setupAgent([
+				toolCallResponse("create_session", { session_name: "backend" }, "tc1"),
+				toolCallResponse("create_session", { session_name: "frontend" }, "tc2"),
+				// frontend is now active; exit backend
+				toolCallResponse("exit_agent", { summary: "exit backend", session_id: "clipilot-backend" }, "tc3"),
+				// send without session_id should still go to frontend (still active)
+				toolCallResponse("send_to_agent", { prompt: "continue", summary: "continue" }, "tc4"),
+				textResponse("Done."),
+			]);
+
+			mockAdapter.launch
+				.mockResolvedValueOnce("clipilot-backend:0.0")
+				.mockResolvedValueOnce("clipilot-frontend:0.0");
+			mockAdapter.exitAgent = vi.fn().mockResolvedValue({ content: "exited", sessionId: null });
+
+			await agent.handleMessage("exit non-active");
+
+			expect(mockAdapter.exitAgent).toHaveBeenCalledWith(mockBridge, "clipilot-backend:0.0");
+			expect(mockAdapter.sendPrompt).toHaveBeenCalledWith(mockBridge, "clipilot-frontend:0.0", "continue");
+		});
+
+		it("should update activeSessionId when using session_id parameter", async () => {
+			const agent = setupAgent([
+				toolCallResponse("create_session", { session_name: "backend" }, "tc1"),
+				toolCallResponse("create_session", { session_name: "frontend" }, "tc2"),
+				// Send to backend explicitly — should switch active
+				toolCallResponse("send_to_agent", { prompt: "backend task", summary: "test", session_id: "clipilot-backend" }, "tc3"),
+				// Now send without session_id — should go to backend (newly active)
+				toolCallResponse("send_to_agent", { prompt: "follow up", summary: "test" }, "tc4"),
+				textResponse("Done."),
+			]);
+
+			mockAdapter.launch
+				.mockResolvedValueOnce("clipilot-backend:0.0")
+				.mockResolvedValueOnce("clipilot-frontend:0.0");
+
+			await agent.handleMessage("switch active");
+
+			const sendCalls = mockAdapter.sendPrompt.mock.calls;
+			expect(sendCalls).toHaveLength(2);
+			expect(sendCalls[0]).toEqual([mockBridge, "clipilot-backend:0.0", "backend task"]);
+			expect(sendCalls[1]).toEqual([mockBridge, "clipilot-backend:0.0", "follow up"]);
+		});
+
+		it("should work with setPaneTarget for backward compatibility", async () => {
+			const agent = setupAgent([
+				toolCallResponse("fetch_more", { lines: 100 }, "tc1"),
+				textResponse("Got content."),
+			]);
+
+			// Legacy setPaneTarget still works
+			agent.setPaneTarget("legacy:0.0");
+
+			await agent.handleMessage("fetch more");
+
+			expect(mockBridge.capturePane).toHaveBeenCalledWith("legacy:0.0", { startLine: -100 });
+		});
+	});
 });
