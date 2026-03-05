@@ -1,5 +1,7 @@
 #!/usr/bin/env node
 
+import { spawn } from "node:child_process";
+import { closeSync, openSync } from "node:fs";
 import { join } from "node:path";
 import chalk from "chalk";
 import { ClaudeCodeAdapter } from "./agents/claude-code.js";
@@ -27,12 +29,17 @@ import { TmuxBridge } from "./tmux/bridge.js";
 import { StateDetector } from "./tmux/state-detector.js";
 import { runConfigTUI } from "./tui/config-app.js";
 import {
+	clearServerRuntimeState,
 	ensureConfigDir,
+	getLogsDir,
 	ensureProjectStorageDir,
 	getGlobalDbPath,
 	getProjectId,
 	getProjectStorageDir,
+	loadServerRuntimeState,
 	loadConfig,
+	saveServerRuntimeState,
+	type ServerRuntimeState,
 } from "./utils/config.js";
 import { logger } from "./utils/logger.js";
 
@@ -79,6 +86,173 @@ function createMemorySyncRunner(params: {
 	};
 }
 
+function sleep(ms: number): Promise<void> {
+	return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+function isProcessRunning(pid: number): boolean {
+	if (!Number.isInteger(pid) || pid <= 0) {
+		return false;
+	}
+
+	try {
+		process.kill(pid, 0);
+		return true;
+	} catch (err: any) {
+		if (err?.code === "EPERM") {
+			// Process exists but we do not have permission to signal it.
+			return true;
+		}
+		return false;
+	}
+}
+
+async function getActiveServerState(): Promise<ServerRuntimeState | null> {
+	const state = await loadServerRuntimeState();
+	if (!state) {
+		return null;
+	}
+
+	if (!isProcessRunning(state.pid)) {
+		await clearServerRuntimeState();
+		return null;
+	}
+
+	return state;
+}
+
+function buildDaemonChildArgs(args: ReturnType<typeof parseCliArgs>): string[] {
+	const childArgs = [process.argv[1], "serve", "--agent", args.agent, "--host", args.host, "--port", String(args.port), "--cwd", args.cwd];
+
+	if (args.provider) {
+		childArgs.push("--provider", args.provider);
+	}
+	if (args.model) {
+		childArgs.push("--model", args.model);
+	}
+	if (args.baseUrl) {
+		childArgs.push("--base-url", args.baseUrl);
+	}
+
+	return childArgs;
+}
+
+async function waitForServerState(pid: number, timeoutMs = 10000): Promise<ServerRuntimeState | null> {
+	const deadline = Date.now() + timeoutMs;
+
+	while (Date.now() < deadline) {
+		const state = await loadServerRuntimeState();
+		if (state && state.pid === pid) {
+			return state;
+		}
+		if (!isProcessRunning(pid)) {
+			return null;
+		}
+		await sleep(200);
+	}
+
+	return null;
+}
+
+async function handleStartCommand(args: ReturnType<typeof parseCliArgs>): Promise<void> {
+	await ensureConfigDir();
+
+	const running = await getActiveServerState();
+	if (running) {
+		console.log(`CLIPilot is already running: ${running.url}`);
+		return;
+	}
+
+	const logsDir = await getLogsDir();
+	const logFile = join(logsDir, "server.log");
+	const fd = openSync(logFile, "a");
+
+	try {
+		const child = spawn(process.execPath, buildDaemonChildArgs(args), {
+			detached: true,
+			stdio: ["ignore", fd, fd],
+			env: {
+				...process.env,
+				CLIPILOT_DAEMON: "1",
+			},
+		});
+
+		child.unref();
+
+		if (!child.pid) {
+			console.error("Failed to launch CLIPilot background process.");
+			process.exit(1);
+		}
+
+		const state = await waitForServerState(child.pid);
+		if (state) {
+			console.log(`CLIPilot started in background: ${state.url}`);
+			console.log(`Log file: ${logFile}`);
+			return;
+		}
+
+		if (isProcessRunning(child.pid)) {
+			const fallbackUrl = `http://${args.host}:${args.port}`;
+			console.log(`CLIPilot started in background: ${fallbackUrl}`);
+			console.log(`Log file: ${logFile}`);
+			return;
+		}
+
+		console.error(`Failed to start CLIPilot. See logs: ${logFile}`);
+		process.exit(1);
+	} finally {
+		closeSync(fd);
+	}
+}
+
+async function handleStopCommand(): Promise<void> {
+	await ensureConfigDir();
+
+	const state = await loadServerRuntimeState();
+	if (!state) {
+		console.log("CLIPilot is not running.");
+		return;
+	}
+
+	if (!isProcessRunning(state.pid)) {
+		await clearServerRuntimeState();
+		console.log("CLIPilot is not running (cleared stale state).");
+		return;
+	}
+
+	try {
+		process.kill(state.pid, "SIGTERM");
+	} catch (err: any) {
+		if (err?.code === "ESRCH") {
+			await clearServerRuntimeState();
+			console.log("CLIPilot is not running (cleared stale state).");
+			return;
+		}
+		throw err;
+	}
+
+	const deadline = Date.now() + 8000;
+	while (Date.now() < deadline) {
+		if (!isProcessRunning(state.pid)) {
+			await clearServerRuntimeState();
+			console.log(`Stopped CLIPilot: ${state.url}`);
+			return;
+		}
+		await sleep(200);
+	}
+
+	try {
+		process.kill(state.pid, "SIGKILL");
+	} catch (err: any) {
+		if (err?.code !== "ESRCH") {
+			throw err;
+		}
+	}
+
+	await clearServerRuntimeState();
+	console.log(`Stopped CLIPilot (forced): ${state.url}`);
+}
+
 async function main(): Promise<void> {
 	const args = parseCliArgs();
 
@@ -99,6 +273,16 @@ async function main(): Promise<void> {
 
 	if (args.subcommand === "doctor") {
 		await runDoctor();
+		return;
+	}
+
+	if (args.subcommand === "start") {
+		await handleStartCommand(args);
+		return;
+	}
+
+	if (args.subcommand === "stop") {
+		await handleStopCommand();
 		return;
 	}
 
@@ -163,6 +347,7 @@ async function main(): Promise<void> {
 	}
 
 	// ─── Default: Start Server ──────────────────────────
+	const isDaemonProcess = process.env.CLIPILOT_DAEMON === "1";
 
 	await ensureConfigDir();
 	await logger.init();
@@ -395,6 +580,17 @@ async function main(): Promise<void> {
 		executionEventStore,
 	});
 
+	if (isDaemonProcess) {
+		await saveServerRuntimeState({
+			pid: process.pid,
+			host: args.host,
+			port: serverInstance.port,
+			url: `http://${args.host}:${serverInstance.port}`,
+			cwd: args.cwd,
+			startedAt: new Date().toISOString(),
+		});
+	}
+
 	// ─── Graceful Shutdown ──────────────────────────────
 
 	const shutdown = async () => {
@@ -412,6 +608,13 @@ async function main(): Promise<void> {
 
 		// Close MemoryStore
 		memoryStore.close();
+
+		if (isDaemonProcess) {
+			const state = await loadServerRuntimeState();
+			if (state?.pid === process.pid) {
+				await clearServerRuntimeState();
+			}
+		}
 
 		logger.info("main", "Graceful shutdown complete");
 		process.exit(0);

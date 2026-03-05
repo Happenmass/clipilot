@@ -1,6 +1,6 @@
 import { createHash } from "node:crypto";
 import { existsSync } from "node:fs";
-import { mkdir, readFile, writeFile } from "node:fs/promises";
+import { mkdir, readFile, unlink, writeFile } from "node:fs/promises";
 import { homedir } from "node:os";
 import { basename, join, resolve } from "node:path";
 
@@ -69,6 +69,16 @@ export interface CLIPilotConfig {
 
 const CONFIG_DIR = join(homedir(), ".clipilot");
 const CONFIG_FILE = join(CONFIG_DIR, "config.json");
+const SERVER_STATE_FILE = join(CONFIG_DIR, "server-state.json");
+
+export interface ServerRuntimeState {
+	pid: number;
+	host: string;
+	port: number;
+	url: string;
+	cwd: string;
+	startedAt: string;
+}
 
 const DEFAULT_CONFIG: CLIPilotConfig = {
 	defaultAgent: "claude-code",
@@ -109,6 +119,10 @@ export function getConfigFilePath(): string {
 	return CONFIG_FILE;
 }
 
+export function getServerStateFilePath(): string {
+	return SERVER_STATE_FILE;
+}
+
 export async function ensureConfigDir(): Promise<void> {
 	await mkdir(CONFIG_DIR, { recursive: true });
 }
@@ -140,6 +154,52 @@ export async function loadConfig(): Promise<CLIPilotConfig> {
 export async function saveConfig(config: CLIPilotConfig): Promise<void> {
 	await ensureConfigDir();
 	await writeFile(CONFIG_FILE, JSON.stringify(config, null, "\t"), "utf-8");
+}
+
+export async function loadServerRuntimeState(): Promise<ServerRuntimeState | null> {
+	if (!existsSync(SERVER_STATE_FILE)) {
+		return null;
+	}
+
+	try {
+		const raw = await readFile(SERVER_STATE_FILE, "utf-8");
+		const parsed = JSON.parse(raw) as Partial<ServerRuntimeState>;
+		if (
+			typeof parsed.pid !== "number" ||
+			typeof parsed.host !== "string" ||
+			typeof parsed.port !== "number" ||
+			typeof parsed.url !== "string" ||
+			typeof parsed.cwd !== "string" ||
+			typeof parsed.startedAt !== "string"
+		) {
+			return null;
+		}
+		return {
+			pid: parsed.pid,
+			host: parsed.host,
+			port: parsed.port,
+			url: parsed.url,
+			cwd: parsed.cwd,
+			startedAt: parsed.startedAt,
+		};
+	} catch {
+		return null;
+	}
+}
+
+export async function saveServerRuntimeState(state: ServerRuntimeState): Promise<void> {
+	await ensureConfigDir();
+	await writeFile(SERVER_STATE_FILE, JSON.stringify(state, null, "\t"), "utf-8");
+}
+
+export async function clearServerRuntimeState(): Promise<void> {
+	try {
+		await unlink(SERVER_STATE_FILE);
+	} catch (err: any) {
+		if (err?.code !== "ENOENT") {
+			throw err;
+		}
+	}
 }
 
 export async function getSessionsDir(): Promise<string> {

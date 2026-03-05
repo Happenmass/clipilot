@@ -18,6 +18,7 @@ export interface CLIArgs {
 
 export function parseCliArgs(): CLIArgs {
 	const { values, positionals } = parseArgs({
+		args: process.argv.slice(2),
 		allowPositionals: true,
 		options: {
 			agent: { type: "string", short: "a", default: "claude-code" },
@@ -61,11 +62,15 @@ export function printHelp(): void {
 CLIPilot - Chat-based meta-orchestrator for coding agents
 
 Usage:
-  clipilot [options]              Start the chat server (default)
-  clipilot serve [options]        Start the chat server explicitly
+  clipilot [options]              Start the chat server in foreground (default)
+  clipilot serve [options]        Start the chat server in foreground explicitly
+  clipilot start [options]        Start the chat server in background
+  clipilot stop                   Stop the background server
 
 Subcommands:
-  serve                   Start the chat server (default behavior)
+  serve                   Start the chat server in foreground (default behavior)
+  start                   Start the chat server in background (daemon mode)
+  stop                    Stop the background server
   init                    Initialize project-level skills and prompts directories
   remember <text>         Save a note to project memory for future sessions
   config                  Open configuration TUI
@@ -87,7 +92,9 @@ Options:
   -v, --version           Show version
 
 Examples:
-  clipilot                                            # Start server on default port
+  clipilot                                            # Start foreground server on default port
+  clipilot start                                      # Start background server
+  clipilot stop                                       # Stop background server
   clipilot --host 0.0.0.0 --port 3120                 # Expose server on all interfaces
   clipilot --port 8080                                # Start server on port 8080
   clipilot -p openai -m gpt-4o                        # Start with specific LLM
