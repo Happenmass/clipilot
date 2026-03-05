@@ -90,6 +90,40 @@ function sleep(ms: number): Promise<void> {
 	return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
+async function triggerTmuxEscapeCascade(opts?: { repeats?: number; intervalMs?: number }): Promise<void> {
+	const repeats = Math.max(1, opts?.repeats ?? 2);
+	const intervalMs = Math.max(0, opts?.intervalMs ?? 80);
+	const bridge = new TmuxBridge();
+
+	const tmuxInstalled = await bridge.checkInstalled();
+	if (!tmuxInstalled) {
+		return;
+	}
+
+	const sessions = await bridge.listClipilotSessions();
+	for (const session of sessions) {
+		let panes = [];
+		try {
+			panes = await bridge.listPanes(session.name);
+		} catch {
+			continue;
+		}
+
+		for (const pane of panes) {
+			for (let i = 0; i < repeats; i++) {
+				try {
+					await bridge.sendEscape(pane.id);
+				} catch {
+					break;
+				}
+				if (intervalMs > 0) {
+					await sleep(intervalMs);
+				}
+			}
+		}
+	}
+}
+
 function isProcessRunning(pid: number): boolean {
 	if (!Number.isInteger(pid) || pid <= 0) {
 		return false;
@@ -220,6 +254,9 @@ async function handleStopCommand(): Promise<void> {
 		return;
 	}
 
+	// Best-effort: cascade ESC to clipilot tmux panes before stopping server process.
+	await triggerTmuxEscapeCascade();
+
 	try {
 		process.kill(state.pid, "SIGTERM");
 	} catch (err: any) {
@@ -240,6 +277,9 @@ async function handleStopCommand(): Promise<void> {
 		}
 		await sleep(200);
 	}
+
+	// Try one more ESC cascade before forcing SIGKILL.
+	await triggerTmuxEscapeCascade({ repeats: 1, intervalMs: 40 });
 
 	try {
 		process.kill(state.pid, "SIGKILL");
