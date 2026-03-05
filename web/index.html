@@ -16,7 +16,16 @@
 			</div>
 		</header>
 
-		<main id="messages"></main>
+		<div id="content">
+			<main id="messages"></main>
+			<aside id="execution-panel">
+				<div class="execution-panel-header">
+					<h2>执行证据</h2>
+					<p>显示最近的工具调用、终端片段和持久化状态。</p>
+				</div>
+				<div id="execution-cards"></div>
+			</aside>
+		</div>
 
 		<footer id="input-area">
 			<div id="command-dropdown" class="command-dropdown hidden"></div>
@@ -27,6 +36,6 @@
 		</footer>
 	</div>
 
-	<script src="app.js"></script>
+	<script type="module" src="app.js"></script>
 </body>
 </html>
