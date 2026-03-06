@@ -48,6 +48,15 @@ export class CommandRegistry {
 		return all.filter((c) => c.name.toLowerCase().includes(q) || c.description.toLowerCase().includes(q));
 	}
 
+	/** Remove all skill-declared commands, keeping builtin commands intact. */
+	clearSkillCommands(): void {
+		for (const [name, desc] of this.commands) {
+			if (desc.category === "skill") {
+				this.commands.delete(name);
+			}
+		}
+	}
+
 	get size(): number {
 		return this.commands.size;
 	}

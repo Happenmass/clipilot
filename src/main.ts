@@ -1,7 +1,8 @@
 #!/usr/bin/env node
 
-import { spawn } from "node:child_process";
-import { closeSync, openSync } from "node:fs";
+import { execFile, spawn } from "node:child_process";
+import { closeSync, openSync, readFileSync } from "node:fs";
+import { createConnection } from "node:net";
 import { join } from "node:path";
 import chalk from "chalk";
 import { ClaudeCodeAdapter } from "./agents/claude-code.js";
@@ -142,6 +143,70 @@ function isProcessRunning(pid: number): boolean {
 	}
 }
 
+function isPortInUse(host: string, port: number): Promise<boolean> {
+	return new Promise((resolve) => {
+		const socket = createConnection({ host, port });
+		socket.once("connect", () => {
+			socket.destroy();
+			resolve(true);
+		});
+		socket.once("error", () => {
+			socket.destroy();
+			resolve(false);
+		});
+		socket.setTimeout(1000, () => {
+			socket.destroy();
+			resolve(false);
+		});
+	});
+}
+
+async function waitForPortRelease(host: string, port: number, timeoutMs = 3000): Promise<boolean> {
+	const deadline = Date.now() + timeoutMs;
+	while (Date.now() < deadline) {
+		if (!(await isPortInUse(host, port))) {
+			return true;
+		}
+		await sleep(200);
+	}
+	return false;
+}
+
+function findPidOnPort(port: number): Promise<number | null> {
+	return new Promise((resolve) => {
+		execFile("lsof", ["-ti", `:${port}`], (err, stdout) => {
+			if (err || !stdout.trim()) {
+				resolve(null);
+				return;
+			}
+			const pid = Number.parseInt(stdout.trim().split("\n")[0], 10);
+			resolve(Number.isNaN(pid) ? null : pid);
+		});
+	});
+}
+
+async function killByPort(port: number): Promise<boolean> {
+	const pid = await findPidOnPort(port);
+	if (!pid) return false;
+	try {
+		process.kill(pid, "SIGTERM");
+	} catch {
+		return false;
+	}
+	const deadline = Date.now() + 5000;
+	while (Date.now() < deadline) {
+		if (!isProcessRunning(pid)) return true;
+		await sleep(200);
+	}
+	try {
+		process.kill(pid, "SIGKILL");
+	} catch {
+		/* ignore */
+	}
+	await sleep(300);
+	return !isProcessRunning(pid);
+}
+
 async function getActiveServerState(): Promise<ServerRuntimeState | null> {
 	const state = await loadServerRuntimeState();
 	if (!state) {
@@ -157,7 +222,7 @@ async function getActiveServerState(): Promise<ServerRuntimeState | null> {
 }
 
 function buildDaemonChildArgs(args: ReturnType<typeof parseCliArgs>): string[] {
-	const childArgs = [process.argv[1], "serve", "--agent", args.agent, "--host", args.host, "--port", String(args.port), "--cwd", args.cwd];
+	const childArgs = ["--max-old-space-size=8192", process.argv[1], "serve", "--agent", args.agent, "--host", args.host, "--port", String(args.port), "--cwd", args.cwd];
 
 	if (args.provider) {
 		childArgs.push("--provider", args.provider);
@@ -198,6 +263,13 @@ async function handleStartCommand(args: ReturnType<typeof parseCliArgs>): Promis
 		return;
 	}
 
+	// Check if port is already in use (e.g. by a foreground process without state file)
+	if (await isPortInUse(args.host, args.port)) {
+		console.error(`Port ${args.port} is already in use.`);
+		console.error("Run 'clipilot stop' first, or use --port to specify a different port.");
+		process.exit(1);
+	}
+
 	const logsDir = await getLogsDir();
 	const logFile = join(logsDir, "server.log");
 	const fd = openSync(logFile, "a");
@@ -226,32 +298,73 @@ async function handleStartCommand(args: ReturnType<typeof parseCliArgs>): Promis
 			return;
 		}
 
-		if (isProcessRunning(child.pid)) {
-			const fallbackUrl = `http://${args.host}:${args.port}`;
-			console.log(`CLIPilot started in background: ${fallbackUrl}`);
+		// Daemon didn't write state file — check if it's actually running
+		if (!isProcessRunning(child.pid)) {
+			// Process already exited — show last few lines from log
+			try {
+				const logContent = readFileSync(logFile, "utf-8");
+				const lastLines = logContent.split("\n").filter(Boolean).slice(-5).join("\n");
+				if (lastLines) {
+					console.error(`Failed to start CLIPilot:\n${lastLines}`);
+				} else {
+					console.error(`Failed to start CLIPilot. See logs: ${logFile}`);
+				}
+			} catch {
+				console.error(`Failed to start CLIPilot. See logs: ${logFile}`);
+			}
+			process.exit(1);
+		}
+
+		// Process is running but no state yet — give it a bit more time
+		await sleep(2000);
+		const retryState = await waitForServerState(child.pid, 3000);
+		if (retryState) {
+			console.log(`CLIPilot started in background: ${retryState.url}`);
 			console.log(`Log file: ${logFile}`);
 			return;
 		}
 
-		console.error(`Failed to start CLIPilot. See logs: ${logFile}`);
-		process.exit(1);
+		const fallbackUrl = `http://${args.host}:${args.port}`;
+		console.log(`CLIPilot started in background: ${fallbackUrl}`);
+		console.log(`Log file: ${logFile}`);
 	} finally {
 		closeSync(fd);
 	}
 }
 
-async function handleStopCommand(): Promise<void> {
+async function handleStopCommand(args?: { host?: string; port?: number }): Promise<void> {
 	await ensureConfigDir();
 
 	const state = await loadServerRuntimeState();
+	const host = args?.host ?? state?.host ?? "127.0.0.1";
+	const port = args?.port ?? state?.port ?? 3120;
+
 	if (!state) {
-		console.log("CLIPilot is not running.");
+		// No state file — try port-based fallback
+		if (await isPortInUse(host, port)) {
+			console.log(`No state file found, but port ${port} is in use. Attempting to stop by port...`);
+			if (await killByPort(port)) {
+				await waitForPortRelease(host, port);
+				console.log(`Stopped CLIPilot on port ${port}.`);
+			} else {
+				console.error(`Failed to stop process on port ${port}. Try manually: lsof -ti :${port} | xargs kill`);
+			}
+		} else {
+			console.log("CLIPilot is not running.");
+		}
 		return;
 	}
 
 	if (!isProcessRunning(state.pid)) {
 		await clearServerRuntimeState();
-		console.log("CLIPilot is not running (cleared stale state).");
+		// Also check port in case a different process is holding it
+		if (await isPortInUse(host, port)) {
+			console.log(`Stale state cleared, but port ${port} is still in use. Attempting cleanup...`);
+			await killByPort(port);
+			await waitForPortRelease(host, port);
+		} else {
+			console.log("CLIPilot is not running (cleared stale state).");
+		}
 		return;
 	}
 
@@ -273,6 +386,8 @@ async function handleStopCommand(): Promise<void> {
 	while (Date.now() < deadline) {
 		if (!isProcessRunning(state.pid)) {
 			await clearServerRuntimeState();
+			// Wait for port release to avoid EADDRINUSE on immediate restart
+			await waitForPortRelease(host, port);
 			console.log(`Stopped CLIPilot: ${state.url}`);
 			return;
 		}
@@ -291,6 +406,7 @@ async function handleStopCommand(): Promise<void> {
 	}
 
 	await clearServerRuntimeState();
+	await waitForPortRelease(host, port);
 	console.log(`Stopped CLIPilot (forced): ${state.url}`);
 }
 
@@ -323,7 +439,13 @@ async function main(): Promise<void> {
 	}
 
 	if (args.subcommand === "stop") {
-		await handleStopCommand();
+		await handleStopCommand({ host: args.host, port: args.port });
+		return;
+	}
+
+	if (args.subcommand === "restart") {
+		await handleStopCommand({ host: args.host, port: args.port });
+		await handleStartCommand(args);
 		return;
 	}
 
@@ -392,6 +514,21 @@ async function main(): Promise<void> {
 
 	await ensureConfigDir();
 	await logger.init();
+
+	// Check for existing daemon before starting
+	if (!isDaemonProcess) {
+		const existingDaemon = await getActiveServerState();
+		if (existingDaemon) {
+			console.error(`CLIPilot is already running as a daemon: ${existingDaemon.url}`);
+			console.error("Run 'clipilot stop' first, or use 'clipilot restart'.");
+			process.exit(1);
+		}
+		if (await isPortInUse(args.host, args.port)) {
+			console.error(`Port ${args.port} is already in use.`);
+			console.error("Run 'clipilot stop' first, or use --port to specify a different port.");
+			process.exit(1);
+		}
+	}
 
 	const config = await loadConfig();
 
@@ -609,6 +746,88 @@ async function main(): Promise<void> {
 		}
 	}
 
+	// ─── onReset callback (hot-reload prompts, skills, tools) ───
+
+	const onReset = async () => {
+		// 1. Reload prompt templates from disk
+		await promptLoader.load(args.cwd);
+		contextManager.reloadPromptTemplate();
+		logger.info("main", "Prompt templates reloaded");
+
+		// 2. Re-discover and filter skills
+		const resetAdapterSkillsDir = defaultAdapter.getSkillsDir?.();
+		const resetDiscovered = await discoverSkills({
+			adapterSkillsDir: resetAdapterSkillsDir,
+			workspaceDir: args.cwd,
+		});
+		const resetFiltered = filterSkills(resetDiscovered, { disabled: config.skills?.disabled }, args.cwd);
+
+		// 3. Rebuild capabilities summary and update ContextManager modules
+		const resetCapFile = defaultAdapter.getCapabilitiesFile?.();
+		const resetAdapterCaps = resetCapFile
+			? promptLoader.loadAdapterCapabilities(resetCapFile.replace(/^adapters\//, "").replace(/\.md$/, ""))
+			: "";
+		const resetBaseCaps = resetAdapterCaps || "Direct code editing and file operations\nRunning terminal commands";
+		const resetCapSummary = buildCapabilitiesSummary(resetBaseCaps, resetFiltered);
+		contextManager.updateModule("agent_capabilities", resetCapSummary);
+
+		const resetOpenspec = defaultAdapter.getOpenSpecCommands?.() ?? {
+			toolName: "claude",
+			explore: "/opsx:explore",
+			propose: "/opsx:propose",
+			apply: "/opsx:apply",
+			archive: "/opsx:archive",
+			wildcard: "/opsx:*",
+		};
+		contextManager.updateModule("openspec_tool_name", resetOpenspec.toolName);
+		contextManager.updateModule("openspec_cmd_explore", resetOpenspec.explore);
+		contextManager.updateModule("openspec_cmd_propose", resetOpenspec.propose);
+		contextManager.updateModule("openspec_cmd_apply", resetOpenspec.apply);
+		contextManager.updateModule("openspec_cmd_archive", resetOpenspec.archive);
+		contextManager.updateModule("openspec_cmd_wildcard", resetOpenspec.wildcard);
+
+		// 4. Create new SkillRegistry and update MainAgent
+		const resetSkillRegistry = new SkillRegistry(resetFiltered);
+		mainAgent.setSkillRegistry(resetSkillRegistry);
+		logger.info("main", `Skills reloaded: ${resetSkillRegistry.size} (${resetFiltered.map((s) => s.name).join(", ")})`);
+
+		// 5. Clear old skill commands and re-register
+		commandRegistry.clearSkillCommands();
+		for (const skill of resetFiltered) {
+			for (const cmd of skill.commands) {
+				const cmdName = cmd.startsWith("/") ? cmd.slice(1) : cmd;
+				commandRegistry.register({
+					name: cmdName,
+					description: skill.description,
+					category: "skill",
+					skillName: skill.name,
+				});
+			}
+		}
+
+		// 6. Re-sync memory index
+		try {
+			const syncResult = await syncMemoryFiles(memoryStore, {
+				chunking: {
+					tokens: config.memory.chunkTokens,
+					overlap: config.memory.chunkOverlap,
+				},
+				embeddingProvider,
+				cache: embeddingProvider
+					? { provider: embeddingProvider.id, model: embeddingProvider.model, providerKey: "default" }
+					: undefined,
+			});
+			if (syncResult.added + syncResult.updated + syncResult.deleted > 0) {
+				logger.info(
+					"main",
+					`Memory re-sync: +${syncResult.added} ~${syncResult.updated} -${syncResult.deleted} (${syncResult.chunksIndexed} chunks)`,
+				);
+			}
+		} catch (err: any) {
+			logger.warn("main", `Memory re-sync failed (non-fatal): ${err.message}`);
+		}
+	};
+
 	// ─── Start Server ───────────────────────────────────
 
 	const serverInstance = await startServer({
@@ -622,18 +841,18 @@ async function main(): Promise<void> {
 		commandRegistry,
 		executionEventStore,
 		uiEventStore,
+		onReset,
 	});
 
-	if (isDaemonProcess) {
-		await saveServerRuntimeState({
-			pid: process.pid,
-			host: args.host,
-			port: serverInstance.port,
-			url: `http://${args.host}:${serverInstance.port}`,
-			cwd: args.cwd,
-			startedAt: new Date().toISOString(),
-		});
-	}
+	// Save runtime state for both daemon and foreground modes so `stop` can find us
+	await saveServerRuntimeState({
+		pid: process.pid,
+		host: args.host,
+		port: serverInstance.port,
+		url: `http://${args.host}:${serverInstance.port}`,
+		cwd: args.cwd,
+		startedAt: new Date().toISOString(),
+	});
 
 	// ─── Graceful Shutdown ──────────────────────────────
 
@@ -653,11 +872,10 @@ async function main(): Promise<void> {
 		// Close MemoryStore
 		memoryStore.close();
 
-		if (isDaemonProcess) {
-			const state = await loadServerRuntimeState();
-			if (state?.pid === process.pid) {
-				await clearServerRuntimeState();
-			}
+		// Clean up runtime state (both daemon and foreground)
+		const state = await loadServerRuntimeState();
+		if (state?.pid === process.pid) {
+			await clearServerRuntimeState();
 		}
 
 		logger.info("main", "Graceful shutdown complete");

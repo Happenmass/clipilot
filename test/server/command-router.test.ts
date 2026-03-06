@@ -110,12 +110,13 @@ describe("CommandRouter", () => {
 	});
 
 	describe("built-in command registration", () => {
-		it("should register stop, resume, clear into CommandRegistry", () => {
+		it("should register stop, resume, clear, reset into CommandRegistry", () => {
 			setup();
 			expect(commandRegistry.has("stop")).toBe(true);
 			expect(commandRegistry.has("resume")).toBe(true);
 			expect(commandRegistry.has("clear")).toBe(true);
-			expect(commandRegistry.size).toBe(3);
+			expect(commandRegistry.has("reset")).toBe(true);
+			expect(commandRegistry.size).toBe(4);
 		});
 	});
 

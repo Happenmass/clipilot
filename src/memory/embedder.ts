@@ -267,7 +267,11 @@ export function createLocalEmbeddingProvider(params: { modelPath: string; modelC
 				resolvedPath = await resolveModelFile(params.modelPath);
 			}
 
-			const llama = await getLlama();
+			// Limit ramPadding to 512MB — default is 25% of total RAM or 6GB on macOS,
+			// which causes V8 heap OOM on macOS ARM due to unified memory architecture.
+			const llama = await getLlama({
+				ramPadding: 512 * 1024 * 1024,
+			});
 			const model = await llama.loadModel({ modelPath: resolvedPath });
 			embeddingContext = await model.createEmbeddingContext();
 		} catch (err: any) {
@@ -309,13 +313,13 @@ export function createLocalEmbeddingProvider(params: { modelPath: string; modelC
 /** Default HuggingFace model for local embedding when no model path is configured */
 const DEFAULT_HF_MODEL = "hf:gpustack/bce-embedding-base_v1-GGUF/bce-embedding-base_v1-Q8_0.gguf";
 
-/** Auto-detection order for embedding providers (local first, then remote) */
+/** Auto-detection order for embedding providers (remote first, local last to avoid heavy model loading) */
 const AUTO_DETECT_ORDER: Array<Exclude<EmbeddingProviderRequest, "auto">> = [
-	"local",
 	"openai",
 	"gemini",
 	"voyage",
 	"mistral",
+	"local",
 ];
 
 /**

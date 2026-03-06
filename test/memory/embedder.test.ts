@@ -201,25 +201,25 @@ describe("createEmbeddingProvider factory", () => {
 		expect(result.unavailableReason).toBeDefined();
 	});
 
-	it("auto mode should prefer local over openai when both available", async () => {
+	it("auto mode should prefer remote over local when both available", async () => {
 		process.env.OPENAI_API_KEY = "sk-test-auto";
 		const result = await createEmbeddingProvider({
 			provider: "auto",
 			fallback: "none",
 		});
 		expect(result.provider).toBeDefined();
-		// local is first in auto-detect order
-		expect(result.provider!.id).toBe("local");
+		// remote providers are first in auto-detect order to avoid heavy local model loading
+		expect(result.provider!.id).toBe("openai");
 	});
 
-	it("auto mode should prefer local over gemini when both available", async () => {
+	it("auto mode should prefer gemini over local when both available", async () => {
 		process.env.GEMINI_API_KEY = "gem-test";
 		const result = await createEmbeddingProvider({
 			provider: "auto",
 			fallback: "none",
 		});
 		expect(result.provider).toBeDefined();
-		expect(result.provider!.id).toBe("local");
+		expect(result.provider!.id).toBe("gemini");
 	});
 
 	it("explicit mode should return specified provider", async () => {

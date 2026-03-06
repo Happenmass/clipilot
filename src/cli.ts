@@ -66,11 +66,13 @@ Usage:
   clipilot serve [options]        Start the chat server in foreground explicitly
   clipilot start [options]        Start the chat server in background
   clipilot stop                   Stop the background server
+  clipilot restart [options]      Restart the background server
 
 Subcommands:
   serve                   Start the chat server in foreground (default behavior)
   start                   Start the chat server in background (daemon mode)
   stop                    Stop the background server
+  restart                 Restart the background server (stop + start)
   init                    Initialize project-level skills and prompts directories
   remember <text>         Save a note to project memory for future sessions
   config                  Open configuration TUI

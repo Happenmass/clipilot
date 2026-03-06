@@ -93,16 +93,23 @@ export class ContextManager {
 		this.modules.set(key, value);
 	}
 
+	/** Reload the prompt template from PromptLoader (e.g. after prompt files change on disk). */
+	reloadPromptTemplate(): void {
+		this.promptTemplate = this.promptLoader.getRaw("main-agent");
+	}
+
 	// ─── Conversation Management ──────────────────────────
 
 	addMessage(message: LLMMessage): void {
 		this.conversation.push(message);
+
 		// Accumulate chars for hybrid token counting
 		if (typeof message.content === "string") {
 			this.pendingChars += message.content.length;
 		} else {
 			this.pendingChars += JSON.stringify(message.content).length;
 		}
+
 		// Persist to SQLite when ConversationStore is configured
 		if (this.conversationStore) {
 			this.conversationStore.saveMessage(message);
@@ -207,12 +214,32 @@ export class ContextManager {
 
 	/**
 	 * Prepare system prompt and messages for LLM call.
-	 * Deep-clones the conversation, applies transformContext, and returns
-	 * the transformed data. Original conversation is NOT modified.
+	 * Shallow-clones the conversation (deep-copies only mutable fields),
+	 * applies transformContext, and returns the transformed data.
+	 * Original conversation is NOT modified.
 	 */
 	prepareForLLM(): { system: string; messages: LLMMessage[] } {
 		const system = this.getSystemPrompt();
-		const cloned = structuredClone(this.conversation);
+		// Use lightweight clone instead of structuredClone to reduce peak memory:
+		// - tool messages: shallow copy (content is a string, immutable)
+		// - assistant messages with tool_call arrays: shallow copy + copy arguments
+		// - user/system messages: direct reference (transformContext doesn't modify them)
+		const cloned = this.conversation.map((msg) => {
+			if (msg.role === "tool") {
+				return { ...msg };
+			}
+			if (msg.role === "assistant" && Array.isArray(msg.content)) {
+				return {
+					...msg,
+					content: msg.content.map((block) =>
+						block.type === "tool_call"
+							? { ...block, arguments: { ...block.arguments } }
+							: block,
+					),
+				};
+			}
+			return msg;
+		});
 		const transformed = this.transformContext(cloned);
 		return { system, messages: transformed };
 	}

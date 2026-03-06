@@ -9,7 +9,7 @@
 	"scripts": {
 		"build": "tsc && cp -r src/agents/claude-code-skills dist/agents/",
 		"dev": "tsc --watch",
-		"start": "node dist/main.js",
+		"start": "node --max-old-space-size=8192 dist/main.js",
 		"test": "vitest run",
 		"test:watch": "vitest",
 		"check": "biome check src/",

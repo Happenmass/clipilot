@@ -249,6 +249,27 @@ const TOOL_DEFINITIONS: ToolDefinition[] = [
 		},
 	},
 	{
+		name: "kill_session",
+		description:
+			"Kill and remove a tmux session entirely. Use this to clean up sessions that are no longer needed. Unlike exit_agent (which gracefully exits the agent process), this forcefully destroys the entire tmux session. Can kill any clipilot- prefixed session by name, or kill all clipilot sessions at once.",
+		parameters: {
+			type: "object",
+			properties: {
+				session_id: {
+					type: "string",
+					description:
+						'The session name to kill (e.g. "clipilot-chat-1"). If set to "all", kills all clipilot- prefixed sessions.',
+				},
+				summary: {
+					type: "string",
+					description:
+						"A brief human-readable summary for the chat interface (e.g., 'Cleaning up idle session')",
+				},
+			},
+			required: ["session_id", "summary"],
+		},
+	},
+	{
 		name: "exec_command",
 		description:
 			"Execute a bash command directly for read-only reconnaissance. Use for reading files, browsing directories, searching code, and checking environment info. NEVER use for modifications, tests, builds, git operations, or any command with side effects — those MUST go through send_to_agent.",
@@ -346,6 +367,11 @@ export class MainAgent extends EventEmitter<MainAgentEvents> {
 		if (opts.searchConfig) {
 			this.searchConfig = { ...this.searchConfig, ...opts.searchConfig };
 		}
+	}
+
+	/** Replace the skill registry at runtime (used by /reset). */
+	setSkillRegistry(registry: SkillRegistry): void {
+		this.skillRegistry = registry;
 	}
 
 	setPaneTarget(paneTarget: string, sessionId = "_default"): void {
@@ -1396,6 +1422,55 @@ export class MainAgent extends EventEmitter<MainAgentEvents> {
 					parts.push(`Working directory: ${exitSession.workingDir}`);
 				}
 				return { output: parts.join("\n"), terminal: false };
+			}
+
+			case "kill_session": {
+				const killSessionId = args.session_id as string;
+				const killSummary = args.summary as string;
+				this.emitUiEvent("agent_update", killSummary);
+
+				try {
+					if (killSessionId === "all") {
+						const sessions = await this.bridge.listClipilotSessions();
+						if (sessions.length === 0) {
+							return { output: "No clipilot sessions to kill.", terminal: false };
+						}
+						const killed: string[] = [];
+						for (const s of sessions) {
+							try {
+								await this.bridge.killSession(s.name);
+								killed.push(s.name);
+								this.sessions.delete(s.name);
+							} catch {
+								/* best-effort */
+							}
+						}
+						this.activeSessionId = null;
+						return {
+							output: `Killed ${killed.length} session(s): ${killed.join(", ")}`,
+							terminal: false,
+						};
+					}
+
+					// Single session
+					const targetName = killSessionId.startsWith("clipilot-") ? killSessionId : `clipilot-${killSessionId}`;
+					const exists = await this.bridge.hasSession(targetName);
+					if (!exists) {
+						return {
+							output: `Session "${targetName}" not found. Use list_clipilot_sessions to see available sessions.`,
+							terminal: false,
+						};
+					}
+					await this.bridge.killSession(targetName);
+					this.sessions.delete(targetName);
+					if (this.activeSessionId === targetName) {
+						const remaining = [...this.sessions.keys()];
+						this.activeSessionId = remaining.length > 0 ? remaining[remaining.length - 1] : null;
+					}
+					return { output: `Session "${targetName}" killed.`, terminal: false };
+				} catch (err: any) {
+					return { output: `Failed to kill session: ${err.message}`, terminal: false };
+				}
 			}
 
 			case "exec_command": {

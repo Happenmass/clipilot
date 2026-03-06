@@ -27,6 +27,7 @@ export interface ServerOptions {
 	commandRegistry: CommandRegistry;
 	executionEventStore: ExecutionEventStore;
 	uiEventStore?: UiEventStore;
+	onReset?: () => Promise<void>;
 }
 
 export interface ServerInstance {
@@ -49,6 +50,7 @@ export async function startServer(opts: ServerOptions): Promise<ServerInstance> 
 		commandRegistry,
 		executionEventStore,
 		uiEventStore = new UiEventStore(),
+		onReset,
 	} = opts;
 
 	const app = express();
@@ -122,6 +124,7 @@ export async function startServer(opts: ServerOptions): Promise<ServerInstance> 
 		commandRegistry,
 		executionEventStore,
 		uiEventStore,
+		onReset,
 	});
 
 	wss.on("connection", (ws: WebSocket, req) => {

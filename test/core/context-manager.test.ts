@@ -168,16 +168,16 @@ describe("ContextManager", () => {
 			expect(prepared.messages[0].content).toBe("hello");
 		});
 
-		it("should preserve original conversation (deep clone)", () => {
-			contextManager.addMessage({ role: "user", content: "original" });
+		it("should preserve original conversation (tool messages are shallow-copied)", () => {
+			contextManager.addMessage({ role: "tool", content: "original-tool-result", toolCallId: "t1" });
 
 			const prepared = contextManager.prepareForLLM();
 
-			// Mutate the prepared messages
+			// Mutate the prepared tool message content
 			(prepared.messages[0] as any).content = "mutated";
 
-			// Original should be unchanged
-			expect(contextManager.getMessages()[0].content).toBe("original");
+			// Original should be unchanged (tool messages are shallow-copied)
+			expect(contextManager.getMessages()[0].content).toBe("original-tool-result");
 		});
 
 		it("should not modify the original conversation after transformContext", () => {

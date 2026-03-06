@@ -12,6 +12,7 @@ const BUILTIN_COMMANDS: CommandDescriptor[] = [
 	{ name: "stop", description: "停止当前执行任务", category: "builtin" },
 	{ name: "resume", description: "恢复上次中断的执行", category: "builtin" },
 	{ name: "clear", description: "清空对话历史", category: "builtin" },
+	{ name: "reset", description: "重置对话并重新加载提示词和技能", category: "builtin" },
 ];
 
 /**
@@ -25,6 +26,7 @@ export class CommandRouter {
 	private broadcaster: ChatBroadcaster;
 	private executionEventStore: ExecutionEventStore | null;
 	private uiEventStore: UiEventStore | null;
+	private onReset: (() => Promise<void>) | null;
 
 	constructor(opts: {
 		mainAgent: MainAgent;
@@ -34,6 +36,7 @@ export class CommandRouter {
 		commandRegistry: CommandRegistry;
 		executionEventStore?: ExecutionEventStore;
 		uiEventStore?: UiEventStore;
+		onReset?: () => Promise<void>;
 	}) {
 		this.mainAgent = opts.mainAgent;
 		this.signalRouter = opts.signalRouter;
@@ -41,6 +44,7 @@ export class CommandRouter {
 		this.broadcaster = opts.broadcaster;
 		this.executionEventStore = opts.executionEventStore ?? null;
 		this.uiEventStore = opts.uiEventStore ?? null;
+		this.onReset = opts.onReset ?? null;
 
 		// Register built-in commands into the central registry
 		opts.commandRegistry.registerMany(BUILTIN_COMMANDS);
@@ -56,6 +60,8 @@ export class CommandRouter {
 				return this.handleResume();
 			case "clear":
 				return this.handleClear();
+			case "reset":
+				return this.handleReset();
 			default:
 				this.broadcaster.broadcast({
 					type: "system",
@@ -107,5 +113,36 @@ export class CommandRouter {
 		});
 
 		logger.info("command-router", "Conversation cleared");
+	}
+
+	private async handleReset(): Promise<void> {
+		// Stop first if executing
+		if (this.mainAgent.state === "executing") {
+			this.signalRouter.stop();
+			await this.mainAgent.waitForIdle();
+		}
+
+		// Reload prompts, skills, tools, and commands
+		if (this.onReset) {
+			try {
+				await this.onReset();
+			} catch (err: any) {
+				logger.warn("command-router", `Reset reload failed: ${err.message}`);
+			}
+		}
+
+		// Clear conversation (runs memory flush → clears messages → clears SQLite)
+		await this.contextManager.clear();
+		this.executionEventStore?.clear();
+		this.uiEventStore?.clear();
+
+		// Broadcast clear + system message
+		this.broadcaster.broadcast({ type: "clear" });
+		this.broadcaster.broadcast({
+			type: "system",
+			message: "系统已重置：对话已清空，提示词和技能已重新加载",
+		});
+
+		logger.info("command-router", "System reset complete");
 	}
 }

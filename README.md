@@ -48,11 +48,14 @@ clipilot start
 # Stop the background server
 clipilot stop
 
+# Restart the background server (stop + start)
+clipilot restart
+
 # Start with a specific port
 clipilot --port 8080
 
 # Specify a provider and model
-clipilot -p openai -m gpt-4o
+clipilot -p openai -m gpt-5.4
 ```
 
 In background mode, CLIPilot writes logs to `~/.clipilot/logs/server.log` and runtime state to `~/.clipilot/server-state.json`.
