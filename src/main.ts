@@ -486,9 +486,7 @@ async function main(): Promise<void> {
 	if (args.rememberText !== undefined) {
 		if (args.rememberText) {
 			const { appendToPersistentMemory } = await import("./memory/persistent.js");
-			const targetPath = args.global
-				? join(getConfigDir(), "MEMORY.md")
-				: join(args.cwd, ".cliclaw", "MEMORY.md");
+			const targetPath = args.global ? join(getConfigDir(), "MEMORY.md") : join(args.cwd, ".cliclaw", "MEMORY.md");
 			await appendToPersistentMemory(targetPath, "active_notes", args.rememberText);
 			const scope = args.global ? "global" : "project";
 			console.log(`${chalk.green("Remembered")} (${scope}): ${args.rememberText}`);
@@ -675,10 +673,11 @@ async function main(): Promise<void> {
 
 	// Restore conversation from SQLite if any
 	const existingMessageCount = conversationStore.getMessageCount();
+	let restoredMessageCount = 0;
 	if (existingMessageCount > 0) {
-		contextManager.restore(conversationStore);
-		logger.info("main", `Restored ${existingMessageCount} messages from SQLite`);
-		console.log(chalk.dim(`Restored ${existingMessageCount} messages from previous session`));
+		restoredMessageCount = contextManager.restore(conversationStore);
+		logger.info("main", `Restored ${restoredMessageCount} messages from SQLite`);
+		console.log(chalk.dim(`Restored ${restoredMessageCount} messages from previous session`));
 	}
 
 	// Initialize Skill System: discover → filter → inject → registry
@@ -883,6 +882,17 @@ async function main(): Promise<void> {
 		uiEventStore,
 		onReset,
 	});
+
+	// Notify connected clients about restored conversation
+	if (restoredMessageCount > 0) {
+		// Delay slightly to let WebSocket clients connect first
+		setTimeout(() => {
+			broadcaster.broadcast({
+				type: "system",
+				message: `已从上次会话恢复 ${restoredMessageCount} 条消息`,
+			});
+		}, 500);
+	}
 
 	// Save runtime state for both daemon and foreground modes so `stop` can find us
 	await saveServerRuntimeState({

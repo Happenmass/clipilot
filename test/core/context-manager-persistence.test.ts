@@ -89,11 +89,14 @@ describe("ContextManager Persistence", () => {
 				llmClient: mockLLM,
 				promptLoader: mockPromptLoader,
 			});
-			cm.restore(store);
+			const count = cm.restore(store);
 
-			expect(cm.getConversationLength()).toBe(3);
+			expect(count).toBe(3);
+			// restore injects a SESSION_RESTORED notice as the 4th message
+			expect(cm.getConversationLength()).toBe(4);
 			expect(cm.getMessages()[0].content).toBe("msg1");
 			expect(cm.getMessages()[2].content).toBe("msg3");
+			expect(cm.getMessages()[3].content).toContain("[SESSION_RESTORED]");
 		});
 
 		it("should restore compressed_history module", () => {
@@ -141,8 +144,10 @@ describe("ContextManager Persistence", () => {
 				llmClient: mockLLM,
 				promptLoader: mockPromptLoader,
 			});
-			cm.restore(store);
+			const count = cm.restore(store);
 
+			expect(count).toBe(0);
+			// No SESSION_RESTORED notice when there are no messages
 			expect(cm.getConversationLength()).toBe(0);
 		});
 	});

@@ -130,7 +130,7 @@ export class ContextManager {
 	 * Restore conversation and context state from SQLite.
 	 * Rebuilds conversation[], modules, and counters.
 	 */
-	restore(store: ConversationStore): void {
+	restore(store: ConversationStore): number {
 		this.conversationStore = store;
 
 		// 1. Restore conversation messages
@@ -159,20 +159,35 @@ export class ContextManager {
 			this.compactionCount = Number.parseInt(compactionCount, 10) || 0;
 		}
 
-		// 5. Recalculate pendingChars
-		this.pendingChars = 0;
-		for (const msg of this.conversation) {
-			if (typeof msg.content === "string") {
-				this.pendingChars += msg.content.length;
-			} else {
-				this.pendingChars += JSON.stringify(msg.content).length;
+		// 5. Reset pendingChars — restored messages are already accounted for
+		// in lastKnownTokenCount (persisted at last reportUsage call).
+		// Only new messages added after restore should contribute to pendingChars.
+		// If token_count was never persisted, fall back to char-based estimation.
+		if (this.lastKnownTokenCount > 0) {
+			this.pendingChars = 0;
+		} else {
+			// No persisted token count — estimate from message content
+			this.pendingChars = 0;
+			for (const msg of this.conversation) {
+				if (typeof msg.content === "string") {
+					this.pendingChars += msg.content.length;
+				} else {
+					this.pendingChars += JSON.stringify(msg.content).length;
+				}
 			}
 		}
 
-		logger.info(
-			"context-manager",
-			`Restored ${messages.length} messages, compactionCount=${this.compactionCount}`,
-		);
+		// 6. Inject restart context so LLM knows it was restored
+		const restoredCount = messages.length;
+		if (restoredCount > 0) {
+			const restoreNotice = `[SESSION_RESTORED] 服务已重启。上次会话的 ${restoredCount} 条消息已从数据库恢复到对话上下文中。你可以继续之前的工作。${this.modules.has("compressed_history") ? "此前的对话已压缩并保存在 compressed_history 中。" : ""}`;
+			this.conversation.push({ role: "user", content: restoreNotice });
+			// Persist the restore notice so it becomes part of the conversation
+			store.saveMessage({ role: "user", content: restoreNotice });
+		}
+
+		logger.info("context-manager", `Restored ${restoredCount} messages, compactionCount=${this.compactionCount}`);
+		return restoredCount;
 	}
 
 	/**
@@ -232,9 +247,7 @@ export class ContextManager {
 				return {
 					...msg,
 					content: msg.content.map((block) =>
-						block.type === "tool_call"
-							? { ...block, arguments: { ...block.arguments } }
-							: block,
+						block.type === "tool_call" ? { ...block, arguments: { ...block.arguments } } : block,
 					),
 				};
 			}
@@ -373,6 +386,11 @@ export class ContextManager {
 	reportUsage(usage: LLMUsage): void {
 		this.lastKnownTokenCount = usage.inputTokens + usage.outputTokens;
 		this.pendingChars = 0;
+
+		// Persist token_count so compression thresholds survive restarts
+		if (this.conversationStore) {
+			this.conversationStore.saveContextState("token_count", String(this.lastKnownTokenCount));
+		}
 	}
 
 	/**
@@ -422,11 +440,8 @@ export class ContextManager {
 		this.lastKnownTokenCount = 0;
 		this.pendingChars = 0;
 
-		// Persist compressed_history and compaction_count to SQLite
+		// Persist compressed state to SQLite: clear first, then save (atomic sequence)
 		if (this.conversationStore) {
-			this.conversationStore.saveContextState("compressed_history", response.content.trim());
-			this.conversationStore.saveContextState("compaction_count", String(this.compactionCount));
-			// Clear old messages from SQLite since conversation was reset
 			this.conversationStore.clearAll();
 			this.conversationStore.saveContextState("compressed_history", response.content.trim());
 			this.conversationStore.saveContextState("compaction_count", String(this.compactionCount));
