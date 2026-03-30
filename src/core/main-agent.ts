@@ -1499,7 +1499,14 @@ export class MainAgent extends EventEmitter<MainAgentEvents> {
 							changedFiles: [],
 						},
 					});
-					const resumeSessionId = args.resume_session_id as string | undefined;
+					const rawResumeId = args.resume_session_id as string | undefined;
+					const resumeSessionId = rawResumeId?.trim() || undefined;
+					if (resumeSessionId && /\s/.test(resumeSessionId)) {
+						return {
+							output: `Error: resume_session_id must not contain whitespace: "${resumeSessionId}"`,
+							terminal: false,
+						};
+					}
 					const paneTarget = await this.adapter.launch(this.bridge, {
 						workingDir,
 						sessionName,
