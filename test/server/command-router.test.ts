@@ -19,9 +19,11 @@ function createMockSignalRouter() {
 	} as any;
 }
 
-function createMockContextManager() {
+function createMockContextManager(shouldCompress = true) {
 	return {
 		clear: vi.fn().mockResolvedValue(undefined),
+		shouldCompress: vi.fn().mockReturnValue(shouldCompress),
+		compress: vi.fn().mockResolvedValue(undefined),
 	} as any;
 }
 
@@ -109,14 +111,55 @@ describe("CommandRouter", () => {
 		});
 	});
 
+	describe("/compact", () => {
+		it("should compress context and broadcast when shouldCompress is true", async () => {
+			setup("idle");
+			await commandRouter.handle("compact");
+			expect(mockCtx.shouldCompress).toHaveBeenCalled();
+			expect(mockCtx.compress).toHaveBeenCalled();
+			expect(mockBroadcaster.broadcast).toHaveBeenCalledWith(
+				expect.objectContaining({ type: "system", message: "对话历史已压缩并注入系统提示词" }),
+			);
+		});
+
+		it("should skip compression when context is short", async () => {
+			mockAgent = createMockMainAgent("idle");
+			mockRouter = createMockSignalRouter();
+			mockCtx = createMockContextManager(false);
+			mockBroadcaster = createMockBroadcaster();
+			commandRegistry = new CommandRegistry();
+			commandRouter = new CommandRouter({
+				mainAgent: mockAgent,
+				signalRouter: mockRouter,
+				contextManager: mockCtx,
+				broadcaster: mockBroadcaster,
+				commandRegistry,
+			});
+			await commandRouter.handle("compact");
+			expect(mockCtx.compress).not.toHaveBeenCalled();
+			expect(mockBroadcaster.broadcast).toHaveBeenCalledWith(
+				expect.objectContaining({ type: "system", message: "对话上下文较短，无需压缩" }),
+			);
+		});
+
+		it("should stop first then compress when executing", async () => {
+			setup("executing");
+			await commandRouter.handle("compact");
+			expect(mockRouter.stop).toHaveBeenCalled();
+			expect(mockAgent.waitForIdle).toHaveBeenCalled();
+			expect(mockCtx.compress).toHaveBeenCalled();
+		});
+	});
+
 	describe("built-in command registration", () => {
-		it("should register stop, resume, clear, reset into CommandRegistry", () => {
+		it("should register stop, resume, clear, reset, compact into CommandRegistry", () => {
 			setup();
 			expect(commandRegistry.has("stop")).toBe(true);
 			expect(commandRegistry.has("resume")).toBe(true);
 			expect(commandRegistry.has("clear")).toBe(true);
 			expect(commandRegistry.has("reset")).toBe(true);
-			expect(commandRegistry.size).toBe(4);
+			expect(commandRegistry.has("compact")).toBe(true);
+			expect(commandRegistry.size).toBe(5);
 		});
 	});
 

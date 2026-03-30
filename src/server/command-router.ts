@@ -13,6 +13,7 @@ const BUILTIN_COMMANDS: CommandDescriptor[] = [
 	{ name: "resume", description: "恢复上次中断的执行", category: "builtin" },
 	{ name: "clear", description: "清空对话历史", category: "builtin" },
 	{ name: "reset", description: "重置对话并重新加载提示词和技能", category: "builtin" },
+	{ name: "compact", description: "压缩对话历史并注入系统提示词", category: "builtin" },
 ];
 
 /**
@@ -62,6 +63,8 @@ export class CommandRouter {
 				return this.handleClear();
 			case "reset":
 				return this.handleReset();
+			case "compact":
+				return this.handleCompact();
 			default:
 				this.broadcaster.broadcast({
 					type: "system",
@@ -113,6 +116,36 @@ export class CommandRouter {
 		});
 
 		logger.info("command-router", "Conversation cleared");
+	}
+
+	private async handleCompact(): Promise<void> {
+		// Stop first if executing
+		if (this.mainAgent.state === "executing") {
+			this.signalRouter.stop();
+			await this.mainAgent.waitForIdle();
+		}
+
+		if (!this.contextManager.shouldCompress()) {
+			this.broadcaster.broadcast({
+				type: "system",
+				message: "对话上下文较短，无需压缩",
+			});
+			return;
+		}
+
+		this.broadcaster.broadcast({
+			type: "system",
+			message: "正在压缩对话历史...",
+		});
+
+		await this.contextManager.compress();
+
+		this.broadcaster.broadcast({
+			type: "system",
+			message: "对话历史已压缩并注入系统提示词",
+		});
+
+		logger.info("command-router", "Conversation compacted via /compact command");
 	}
 
 	private async handleReset(): Promise<void> {
