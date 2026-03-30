@@ -30,9 +30,10 @@ export class ClaudeCodeAdapter implements AgentAdapter {
 		// Use the default window (index 0) of the session
 		const paneTarget = `${opts.sessionName}:0.0`;
 
-		// Type "claude" and press Enter to launch
-		logger.info("claude-code", `Launching in ${paneTarget}`);
-		await bridge.sendText(paneTarget, this.command);
+		// Type launch command and press Enter
+		const cmd = opts.resumeSessionId ? `${this.command} --resume ${opts.resumeSessionId}` : this.command;
+		logger.info("claude-code", `Launching in ${paneTarget}: ${cmd}`);
+		await bridge.sendText(paneTarget, cmd);
 		await sleep(200);
 		await bridge.sendEnter(paneTarget);
 

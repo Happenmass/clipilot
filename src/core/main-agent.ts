@@ -219,6 +219,11 @@ const TOOL_DEFINITIONS: ToolDefinition[] = [
 					type: "string",
 					description: "Working directory for the agent. Defaults to process.cwd() if omitted.",
 				},
+				resume_session_id: {
+					type: "string",
+					description:
+						"Claude Code session id to resume (from exit_agent). When provided, launches with --resume instead of a fresh session.",
+				},
 			},
 		},
 	},
@@ -1494,9 +1499,11 @@ export class MainAgent extends EventEmitter<MainAgentEvents> {
 							changedFiles: [],
 						},
 					});
+					const resumeSessionId = args.resume_session_id as string | undefined;
 					const paneTarget = await this.adapter.launch(this.bridge, {
 						workingDir,
 						sessionName,
+						resumeSessionId,
 					});
 					this.sessions.set(sessionName, { paneTarget, workingDir });
 					this.activeSessionId = sessionName;

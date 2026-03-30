@@ -866,6 +866,23 @@ describe("MainAgent State Machine", () => {
 			expect(toolResultMsg).toBeTruthy();
 		});
 
+		it("should pass resumeSessionId to adapter.launch when resume_session_id is provided", async () => {
+			const agent = setupAgent([
+				toolCallResponse("create_session", { session_name: "resumed", resume_session_id: "abc-123" }),
+				textResponse("Session resumed."),
+			]);
+
+			await agent.handleMessage("resume session");
+
+			expect(mockAdapter.launch).toHaveBeenCalledWith(
+				expect.anything(),
+				expect.objectContaining({
+					sessionName: "cliclaw-resumed",
+					resumeSessionId: "abc-123",
+				}),
+			);
+		});
+
 		it("should support multiple sessions and route send_to_agent by session_id", async () => {
 			// Create two sessions, then send to the first one by session_id
 			const agent = setupAgent(
