@@ -2,7 +2,13 @@ import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import type { TmuxBridge } from "../tmux/bridge.js";
 import { logger } from "../utils/logger.js";
-import type { AgentAdapter, AgentCharacteristics, ExitAgentResult, LaunchOptions, OpenSpecCommands } from "./adapter.js";
+import type {
+	AgentAdapter,
+	AgentCharacteristics,
+	ExitAgentResult,
+	LaunchOptions,
+	OpenSpecCommands,
+} from "./adapter.js";
 
 export class ClaudeCodeAdapter implements AgentAdapter {
 	readonly name = "claude-code";
@@ -174,22 +180,18 @@ export class ClaudeCodeAdapter implements AgentAdapter {
 	getCharacteristics(): AgentCharacteristics {
 		return {
 			waitingPatterns: [
-				/^>\s*$/m, // Empty prompt
 				/\(y\/n\)/i, // Yes/no prompt
-				/Allow/i, // Permission prompt
-				/\?.*:?\s*$/m, // Question prompt
-				/❯\s*\d+\.\s/, // Numbered option menu (e.g. ❯ 1. Yes)
+				/\bAllow\b.*\?/i, // Permission prompt (word boundary + requires trailing ?)
+				/❯\s*\d+[.)]\s/, // Numbered option menu (e.g. ❯ 1. Yes)
 			],
 			completionPatterns: [
-				/^>\s*$/m, // Back to empty prompt after output
+				/❯\s*$/m, // Claude Code idle prompt (❯ at end of line, no digits after)
 			],
 			errorPatterns: [
-				/Error:/i,
-				/Failed/i,
+				/^\s*Error:/m, // Error at start of line (avoids matching "No Error" or log mentions)
 				/ENOENT/,
 				/EACCES/,
 				/Connection refused/i,
-				/Timeout/i,
 				/command not found/,
 			],
 			activePatterns: [

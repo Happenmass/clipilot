@@ -44,9 +44,9 @@ function createMockPromptLoader(): PromptLoader {
 }
 
 const characteristics: AgentCharacteristics = {
-	waitingPatterns: [/^>\s*$/m, /❯\s*\d+\.\s/],
-	completionPatterns: [/^>\s*$/m],
-	errorPatterns: [/Error:/i],
+	waitingPatterns: [/\(y\/n\)/i, /\bAllow\b.*\?/i, /❯\s*\d+[.)]\s/],
+	completionPatterns: [/❯\s*$/m],
+	errorPatterns: [/^\s*Error:/m],
 	activePatterns: [/[⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏]/],
 	confirmKey: "y",
 	abortKey: "Escape",
@@ -61,8 +61,8 @@ describe("StateDetector.waitForSettled", () => {
 		promptLoader = createMockPromptLoader();
 	});
 
-	// Task 4.1: Phase 1 → Phase 2 normal flow
-	it("should complete Phase 1 → Phase 2 normal flow", async () => {
+	// Task 4.1: Phase 1 → Phase 2 normal flow — idle prompt detected as completed
+	it("should complete Phase 1 → Phase 2 normal flow with idle prompt", async () => {
 		const { bridge, setContent } = createMockBridge("initial content");
 		const detector = new StateDetector(bridge, llm, {
 			pollIntervalMs: 50,
@@ -75,8 +75,8 @@ describe("StateDetector.waitForSettled", () => {
 
 		// After 100ms, agent starts producing output
 		setTimeout(() => setContent("working on task..."), 100);
-		// After 200ms, agent finishes — content shows prompt
-		setTimeout(() => setContent("> "), 200);
+		// After 200ms, agent finishes — content shows idle prompt ❯
+		setTimeout(() => setContent("All tests passed!\n❯ "), 200);
 
 		const result = await detector.waitForSettled("test:0.0", "test task", {
 			preHash,
@@ -84,9 +84,8 @@ describe("StateDetector.waitForSettled", () => {
 		});
 
 		expect(result.timedOut).toBe(false);
-		expect(result.content).toBe("> ");
-		// Should detect waiting_input pattern from "> "
-		expect(result.analysis.status).toBe("waiting_input");
+		// Should detect completion from ❯ idle prompt (not waiting_input)
+		expect(result.analysis.status).toBe("completed");
 	});
 
 	// Task 4.2: Phase 1 timeout (hash never changes)
@@ -155,8 +154,8 @@ describe("StateDetector.waitForSettled", () => {
 		// Phase 1→2: content changes
 		setTimeout(() => setContent("⠋ Processing step 1..."), 80);
 		// Content becomes "stable" with active spinner — should reset and continue
-		// After more waiting, content changes to final state (bare prompt)
-		setTimeout(() => setContent("> "), 400);
+		// After more waiting, content changes to final state (idle prompt)
+		setTimeout(() => setContent("Done\n❯ "), 400);
 
 		const result = await detector.waitForSettled("test:0.0", "test task", {
 			preHash,
@@ -164,8 +163,7 @@ describe("StateDetector.waitForSettled", () => {
 		});
 
 		expect(result.timedOut).toBe(false);
-		expect(result.content).toBe("> ");
-		expect(result.analysis.status).toBe("waiting_input");
+		expect(result.analysis.status).toBe("completed");
 	});
 
 	// Task 4.5: Abort mid-wait
@@ -287,6 +285,88 @@ describe("StateDetector.waitForSettled", () => {
 		expect(result.analysis.status).toBe("waiting_input");
 		// Should detect quickly despite continuous animation
 		expect(elapsed).toBeLessThan(1000);
+	});
+
+	// Core bug fix: idle prompt after output must be "completed", not "waiting_input"
+	it("should detect completed (not waiting_input) when agent returns to ❯ prompt after work", async () => {
+		const { bridge, setContent } = createMockBridge("initial content");
+		const detector = new StateDetector(bridge, llm, {
+			pollIntervalMs: 50,
+			stableThresholdMs: 2000,
+			captureLines: 50,
+		}, promptLoader);
+		detector.setCharacteristics(characteristics);
+
+		const preHash = hash("initial content");
+
+		// Agent works, then returns to idle prompt — this is the exact scenario
+		// that previously caused false waiting_input due to /\?.*:?\s*$/m matching
+		// any line with a "?" in the output
+		setTimeout(() => setContent("Running tests...\n核心流程全部测试通过！"), 80);
+		setTimeout(() => setContent("Running tests...\n核心流程全部测试通过！\nWhat files were changed?\n❯ "), 160);
+
+		const startTime = Date.now();
+		const result = await detector.waitForSettled("test:0.0", "test task", {
+			preHash,
+			timeoutMs: 10000,
+		});
+		const elapsed = Date.now() - startTime;
+
+		expect(result.timedOut).toBe(false);
+		// Must be "completed" — the ❯ idle prompt means the agent is done
+		expect(result.analysis.status).toBe("completed");
+		// Should fast escape, not wait for stableThresholdMs
+		expect(elapsed).toBeLessThan(1000);
+	});
+
+	// Verify that "?" in output does NOT trigger false waiting_input
+	it("should not misdetect waiting_input from question marks in output text", async () => {
+		const { bridge, setContent } = createMockBridge("initial content");
+		const detector = new StateDetector(bridge, llm, {
+			pollIntervalMs: 50,
+			stableThresholdMs: 200,
+			captureLines: 50,
+		}, promptLoader);
+		detector.setCharacteristics(characteristics);
+
+		const preHash = hash("initial content");
+
+		// Output contains "?" but agent is idle at ❯ prompt
+		setTimeout(() => setContent("What is this file?\nHow does it work?\n❯ "), 80);
+
+		const result = await detector.waitForSettled("test:0.0", "test task", {
+			preHash,
+			timeoutMs: 5000,
+		});
+
+		expect(result.timedOut).toBe(false);
+		// "?" in output must NOT cause waiting_input — ❯ means completed
+		expect(result.analysis.status).toBe("completed");
+	});
+
+	// Verify Error: in log output does not false-trigger error status
+	it("should not misdetect error from 'Error:' appearing mid-line in logs", async () => {
+		const { bridge, setContent } = createMockBridge("initial content");
+		const detector = new StateDetector(bridge, llm, {
+			pollIntervalMs: 50,
+			stableThresholdMs: 200,
+			captureLines: 50,
+		}, promptLoader);
+		detector.setCharacteristics(characteristics);
+
+		const preHash = hash("initial content");
+
+		// "Error:" appears in log output but NOT at start of line
+		setTimeout(() => setContent("  Caught Error: timeout in test helper (expected)\n  Tests: 5 passed\n❯ "), 80);
+
+		const result = await detector.waitForSettled("test:0.0", "test task", {
+			preHash,
+			timeoutMs: 5000,
+		});
+
+		expect(result.timedOut).toBe(false);
+		// "Caught Error:" mid-line should not trigger error — ❯ means completed
+		expect(result.analysis.status).toBe("completed");
 	});
 
 	// Task 4.1 supplement: Layer 2 LLM analysis fallback

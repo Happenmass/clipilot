@@ -152,7 +152,7 @@ export class StateDetector {
 
 		const lastLines = content.split("\n").slice(-8).join("\n");
 
-		// Check error patterns
+		// Check error patterns (highest priority)
 		for (const pattern of this.characteristics.errorPatterns) {
 			if (pattern.test(lastLines)) {
 				return {
@@ -163,7 +163,7 @@ export class StateDetector {
 			}
 		}
 
-		// Check waiting patterns
+		// Check waiting patterns (specific interactive prompts)
 		for (const pattern of this.characteristics.waitingPatterns) {
 			if (pattern.test(lastLines)) {
 				return {
@@ -185,6 +185,18 @@ export class StateDetector {
 			}
 		}
 
+		// Check completion patterns (idle prompt — lowest priority so that
+		// waiting/active signals take precedence when both are present)
+		for (const pattern of this.characteristics.completionPatterns) {
+			if (pattern.test(lastLines)) {
+				return {
+					status: "completed",
+					confidence: 0.6,
+					detail: "Agent appears to have completed its task",
+				};
+			}
+		}
+
 		return null;
 	}
 
@@ -202,11 +214,7 @@ export class StateDetector {
 	 *   Phase 1: Wait for hash !== preHash (agent started responding)
 	 *   Phase 2: Wait for content to stabilize >= stableThresholdMs, then analyze
 	 */
-	async waitForSettled(
-		paneTarget: string,
-		taskContext: string,
-		opts: WaitForSettledOptions,
-	): Promise<SettledResult> {
+	async waitForSettled(paneTarget: string, taskContext: string, opts: WaitForSettledOptions): Promise<SettledResult> {
 		const timeoutMs = opts.timeoutMs ?? 1800000; // 30 minutes
 		const startTime = Date.now();
 		let lastChangeTime = Date.now();
@@ -267,14 +275,15 @@ export class StateDetector {
 					lastChangeTime = Date.now();
 					lastContent = content;
 
-					// Fast escape: check for error or waiting_input patterns on each change
+					// Fast escape: check for terminal patterns on each content change
 					const quickResult = this.quickPatternCheck(content);
-					if (quickResult && quickResult.status === "error") {
-						logger.info("state-detector", "waitForSettled: error fast escape");
-						return { analysis: quickResult, content, timedOut: false };
-					}
-					if (quickResult && quickResult.status === "waiting_input") {
-						logger.info("state-detector", "waitForSettled: waiting_input fast escape");
+					if (
+						quickResult &&
+						(quickResult.status === "error" ||
+							quickResult.status === "waiting_input" ||
+							quickResult.status === "completed")
+					) {
+						logger.info("state-detector", `waitForSettled: ${quickResult.status} fast escape`);
 						return { analysis: quickResult, content, timedOut: false };
 					}
 					continue;
