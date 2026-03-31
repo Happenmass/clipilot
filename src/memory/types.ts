@@ -45,6 +45,8 @@ export type EmbeddingProvider = {
 	embedQuery: (text: string) => Promise<number[]>;
 	/** Embed a batch of document texts (uses RETRIEVAL_DOCUMENT task type where applicable) */
 	embedBatch: (texts: string[]) => Promise<number[][]>;
+	/** Optional eager initialization (e.g. download model at startup instead of first use) */
+	warmup?: () => Promise<void>;
 };
 
 export type EmbeddingProviderRequest = "auto" | "openai" | "gemini" | "voyage" | "mistral" | "local";

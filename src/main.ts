@@ -624,6 +624,9 @@ async function main(): Promise<void> {
 	}
 	if (embeddingProvider) {
 		logger.info("main", `Embedding provider: ${embeddingProvider.id} (${embeddingProvider.model})`);
+		if (embeddingProvider.warmup) {
+			await embeddingProvider.warmup();
+		}
 	} else {
 		logger.info("main", "No embedding provider available — FTS-only mode");
 	}

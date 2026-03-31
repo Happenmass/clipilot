@@ -290,6 +290,8 @@ export function createLocalEmbeddingProvider(params: { modelPath: string; modelC
 		id: "local",
 		model: basename(params.modelPath),
 
+		warmup: ensureLoaded,
+
 		embedQuery: async (text: string) => {
 			await ensureLoaded();
 			const result = await embeddingContext.getEmbeddingFor(text);
