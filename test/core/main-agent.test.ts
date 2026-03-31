@@ -1225,6 +1225,170 @@ describe("MainAgent State Machine", () => {
 		});
 	});
 
+	describe("getActiveSessions", () => {
+		it("should return empty array when no sessions exist", () => {
+			const agent = setupAgent([]);
+			expect(agent.getActiveSessions()).toEqual([]);
+		});
+
+		it("should return sessions with idle status when no tasks running", () => {
+			const agent = setupAgent([]);
+			agent.setPaneTarget("sess:0.0", "cliclaw-auth");
+
+			const sessions = agent.getActiveSessions();
+			expect(sessions).toHaveLength(1);
+			expect(sessions[0]).toEqual({
+				sessionName: "cliclaw-auth",
+				sessionId: "cliclaw-auth",
+				paneTarget: "sess:0.0",
+				status: "idle",
+			});
+		});
+
+		it("should map task status running to active", () => {
+			const agent = setupAgent([], {}, { withMonitor: true });
+			agent.setPaneTarget("sess:0.0", "cliclaw-auth");
+
+			// Inject a running task
+			const fakeTask = {
+				taskId: "task_1",
+				sessionId: "cliclaw-auth",
+				status: "running" as const,
+				summary: "test",
+				taskContext: "test",
+				preHash: "abc",
+				startedAt: Date.now(),
+				abortController: new AbortController(),
+			};
+			(agent as any).sessionMonitor.tasks.set("cliclaw-auth", fakeTask);
+
+			const sessions = agent.getActiveSessions();
+			expect(sessions[0].status).toBe("active");
+		});
+
+		it("should map task status waiting_input correctly", () => {
+			const agent = setupAgent([], {}, { withMonitor: true });
+			agent.setPaneTarget("sess:0.0", "cliclaw-auth");
+
+			const fakeTask = {
+				taskId: "task_1",
+				sessionId: "cliclaw-auth",
+				status: "waiting_input" as const,
+				summary: "test",
+				taskContext: "test",
+				preHash: "abc",
+				startedAt: Date.now(),
+				abortController: new AbortController(),
+			};
+			(agent as any).sessionMonitor.tasks.set("cliclaw-auth", fakeTask);
+
+			const sessions = agent.getActiveSessions();
+			expect(sessions[0].status).toBe("waiting_input");
+		});
+
+		it("should return multiple sessions with mixed states", () => {
+			const agent = setupAgent([], {}, { withMonitor: true });
+			agent.setPaneTarget("s1:0.0", "cliclaw-a");
+			agent.setPaneTarget("s2:0.0", "cliclaw-b");
+			agent.setPaneTarget("s3:0.0", "cliclaw-c");
+
+			(agent as any).sessionMonitor.tasks.set("cliclaw-a", {
+				taskId: "t1",
+				sessionId: "cliclaw-a",
+				status: "running",
+				summary: "",
+				taskContext: "",
+				preHash: "",
+				startedAt: Date.now(),
+				abortController: new AbortController(),
+			});
+			(agent as any).sessionMonitor.tasks.set("cliclaw-b", {
+				taskId: "t2",
+				sessionId: "cliclaw-b",
+				status: "waiting_input",
+				summary: "",
+				taskContext: "",
+				preHash: "",
+				startedAt: Date.now(),
+				abortController: new AbortController(),
+			});
+
+			const sessions = agent.getActiveSessions();
+			expect(sessions).toHaveLength(3);
+			const statusMap = new Map(sessions.map((s: any) => [s.sessionId, s.status]));
+			expect(statusMap.get("cliclaw-a")).toBe("active");
+			expect(statusMap.get("cliclaw-b")).toBe("waiting_input");
+			expect(statusMap.get("cliclaw-c")).toBe("idle");
+		});
+	});
+
+	describe("onSessionChange callback", () => {
+		it("should call onSessionChange after create_session", async () => {
+			const callback = vi.fn();
+			const agent = setupAgent([
+				toolCallResponse("create_session", { session_name: "test" }),
+				textResponse("Done."),
+			]);
+			agent.setOnSessionChange(callback);
+
+			await agent.handleMessage("create session");
+
+			expect(callback).toHaveBeenCalledTimes(1);
+		});
+
+		it("should call onSessionChange after exit_agent", async () => {
+			const callback = vi.fn();
+			const agent = setupAgent(
+				[
+					toolCallResponse("create_session", { session_name: "test" }, "tc1"),
+					toolCallResponse("exit_agent", { summary: "exit" }, "tc2"),
+					textResponse("Done."),
+				],
+				{},
+				{ withMonitor: true },
+			);
+			mockAdapter.exitAgent = vi.fn().mockResolvedValue({ content: "exited", sessionId: null });
+			agent.setOnSessionChange(callback);
+
+			await agent.handleMessage("create and exit");
+
+			// Called twice: once for create_session, once for exit_agent
+			expect(callback).toHaveBeenCalledTimes(2);
+		});
+
+		it("should call onSessionChange after kill_session", async () => {
+			const callback = vi.fn();
+			const agent = setupAgent(
+				[
+					toolCallResponse("create_session", { session_name: "test" }, "tc1"),
+					toolCallResponse("kill_session", { session_id: "cliclaw-test", summary: "kill" }, "tc2"),
+					textResponse("Done."),
+				],
+				{},
+				{ withMonitor: true },
+			);
+			// First call: create_session checks existence (false = doesn't exist yet)
+			// Second call: kill_session checks existence (true = exists now)
+			mockBridge.hasSession.mockResolvedValueOnce(false).mockResolvedValueOnce(true);
+			mockBridge.killSession = vi.fn().mockResolvedValue(undefined);
+			agent.setOnSessionChange(callback);
+
+			await agent.handleMessage("create and kill");
+
+			expect(callback).toHaveBeenCalledTimes(2);
+		});
+
+		it("should not throw when no callback is registered", async () => {
+			const agent = setupAgent([
+				toolCallResponse("create_session", { session_name: "test" }),
+				textResponse("Done."),
+			]);
+
+			// No setOnSessionChange — should not throw
+			await expect(agent.handleMessage("create session")).resolves.toBeUndefined();
+		});
+	});
+
 	describe("agent event processing after drainPendingUserMessages", () => {
 		it("should process agent events that arrive during executeToolLoop", async () => {
 			// Scenario: user message triggers send_to_agent → sub-agent returns quickly

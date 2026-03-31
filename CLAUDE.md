@@ -59,6 +59,7 @@ Emits events: `state_change`, `log`. 14 built-in tools:
 - `create_session` — create a `cliclaw-` prefixed tmux session and launch agent
 - `list_cliclaw_sessions` — list all `cliclaw-` prefixed sessions
 - `exit_agent` — exit the current coding agent process, returns captured output and optional session id for resume
+- `kill_session` — forcefully destroy a tmux session (supports "all" to kill all cliclaw sessions)
 - `exec_command` — execute read-only bash commands for reconnaissance
 
 ### Server Layer (`src/server/`)
@@ -195,4 +196,5 @@ Server → Client:
 - `{ type: "tool_activity", summary: string }` — exec_command execution summary (throttled: every 3rd call)
 - `{ type: "state", state: "idle" | "executing" }` — state change
 - `{ type: "system", message: string }` — system notification
+- `{ type: "session_terminals", sessions: Array<{ sessionName, sessionId, status, paneContent }> }` — real-time terminal content for all active sessions (pushed every 1s)
 - `{ type: "clear" }` — clear chat history on frontend

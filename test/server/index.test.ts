@@ -11,6 +11,8 @@ function createMainAgentMock() {
 		handleMessage: async () => undefined,
 		handleResume: async () => undefined,
 		waitForIdle: async () => undefined,
+		setOnSessionChange: () => undefined,
+		getActiveSessions: () => [],
 	} as any;
 }
 
@@ -42,6 +44,12 @@ function createBroadcasterMock() {
 		removeClient: () => undefined,
 		broadcast: () => undefined,
 		getClientCount: () => 0,
+	} as any;
+}
+
+function createBridgeMock() {
+	return {
+		capturePane: async () => ({ content: "", lines: 0 }),
 	} as any;
 }
 
@@ -86,6 +94,7 @@ describe("startServer", () => {
 			contextManager: createContextManagerMock(),
 			conversationStore: createConversationStoreMock(),
 			broadcaster: createBroadcasterMock(),
+			bridge: createBridgeMock(),
 			commandRegistry: new CommandRegistry(),
 			executionEventStore: new ExecutionEventStore(),
 		});
@@ -117,6 +126,7 @@ describe("startServer", () => {
 			contextManager: createContextManagerMock(),
 			conversationStore: createConversationStoreMock(),
 			broadcaster: createBroadcasterMock(),
+			bridge: createBridgeMock(),
 			commandRegistry: new CommandRegistry(),
 			executionEventStore: new ExecutionEventStore(),
 		});
@@ -153,6 +163,7 @@ describe("startServer", () => {
 			contextManager: createContextManagerMock(),
 			conversationStore: createConversationStoreMock(),
 			broadcaster: createBroadcasterMock(),
+			bridge: createBridgeMock(),
 			commandRegistry: new CommandRegistry(),
 			executionEventStore,
 		});
@@ -173,6 +184,111 @@ describe("startServer", () => {
 		]);
 	});
 
+	it("should return session terminals from the API", async () => {
+		const mainAgent = createMainAgentMock();
+		mainAgent.getActiveSessions = () => [
+			{ sessionName: "cliclaw-auth", sessionId: "cliclaw-auth", paneTarget: "auth:0.0", status: "active" },
+		];
+
+		const bridge = createBridgeMock();
+		bridge.capturePane = async () => ({ content: "$ claude\n> Working...\n", lines: 2 });
+
+		server = await startServer({
+			host: "127.0.0.1",
+			port: 0,
+			mainAgent,
+			signalRouter: createSignalRouterMock(),
+			contextManager: createContextManagerMock(),
+			conversationStore: createConversationStoreMock(),
+			broadcaster: createBroadcasterMock(),
+			bridge,
+			commandRegistry: new CommandRegistry(),
+			executionEventStore: new ExecutionEventStore(),
+		});
+
+		const landing = await fetch(`http://127.0.0.1:${server.port}/`);
+		const cookie = getCookieHeader(landing);
+		const response = await fetch(`http://127.0.0.1:${server.port}/api/sessions/terminals`, {
+			headers: { Cookie: cookie },
+		});
+
+		expect(response.status).toBe(200);
+		const sessions = await response.json();
+		expect(sessions).toHaveLength(1);
+		expect(sessions[0]).toEqual({
+			sessionName: "cliclaw-auth",
+			sessionId: "cliclaw-auth",
+			status: "active",
+			paneContent: "$ claude\n> Working...\n",
+		});
+	});
+
+	it("should return empty array when no active sessions", async () => {
+		server = await startServer({
+			host: "127.0.0.1",
+			port: 0,
+			mainAgent: createMainAgentMock(),
+			signalRouter: createSignalRouterMock(),
+			contextManager: createContextManagerMock(),
+			conversationStore: createConversationStoreMock(),
+			broadcaster: createBroadcasterMock(),
+			bridge: createBridgeMock(),
+			commandRegistry: new CommandRegistry(),
+			executionEventStore: new ExecutionEventStore(),
+		});
+
+		const landing = await fetch(`http://127.0.0.1:${server.port}/`);
+		const cookie = getCookieHeader(landing);
+		const response = await fetch(`http://127.0.0.1:${server.port}/api/sessions/terminals`, {
+			headers: { Cookie: cookie },
+		});
+
+		expect(response.status).toBe(200);
+		expect(await response.json()).toEqual([]);
+	});
+
+	it("should handle capturePane failure gracefully in session terminals", async () => {
+		const mainAgent = createMainAgentMock();
+		mainAgent.getActiveSessions = () => [
+			{ sessionName: "cliclaw-broken", sessionId: "cliclaw-broken", paneTarget: "broken:0.0", status: "active" },
+			{ sessionName: "cliclaw-ok", sessionId: "cliclaw-ok", paneTarget: "ok:0.0", status: "idle" },
+		];
+
+		const bridge = createBridgeMock();
+		bridge.capturePane = async (target: string) => {
+			if (target === "broken:0.0") throw new Error("tmux pane destroyed");
+			return { content: "ok content", lines: 1 };
+		};
+
+		server = await startServer({
+			host: "127.0.0.1",
+			port: 0,
+			mainAgent,
+			signalRouter: createSignalRouterMock(),
+			contextManager: createContextManagerMock(),
+			conversationStore: createConversationStoreMock(),
+			broadcaster: createBroadcasterMock(),
+			bridge,
+			commandRegistry: new CommandRegistry(),
+			executionEventStore: new ExecutionEventStore(),
+		});
+
+		const landing = await fetch(`http://127.0.0.1:${server.port}/`);
+		const cookie = getCookieHeader(landing);
+		const response = await fetch(`http://127.0.0.1:${server.port}/api/sessions/terminals`, {
+			headers: { Cookie: cookie },
+		});
+
+		expect(response.status).toBe(200);
+		const sessions = await response.json();
+		expect(sessions).toHaveLength(2);
+		// Failed session should have empty paneContent
+		expect(sessions[0].paneContent).toBe("");
+		expect(sessions[0].sessionName).toBe("cliclaw-broken");
+		// Working session should have content
+		expect(sessions[1].paneContent).toBe("ok content");
+	});
+
 	it("should return recent ui summary events from the API", async () => {
 		const uiEventStore = new UiEventStore();
 		uiEventStore.add({
@@ -190,6 +306,7 @@ describe("startServer", () => {
 			contextManager: createContextManagerMock(),
 			conversationStore: createConversationStoreMock(),
 			broadcaster: createBroadcasterMock(),
+			bridge: createBridgeMock(),
 			commandRegistry: new CommandRegistry(),
 			executionEventStore: new ExecutionEventStore(),
 			uiEventStore,
