@@ -864,16 +864,14 @@ export class MainAgent extends EventEmitter<MainAgentEvents> {
 	}
 
 	private async processUserMessage(content: string): Promise<void> {
-		// IDLE state — process immediately
+		// Optimistic state: show "executing" immediately so the UI responds fast
+		this.setState("executing");
 		this.contextManager.addMessage({ role: "user", content });
 
 		// Stream LLM response
 		const { toolCalls, textContent } = await this.streamLLMResponse();
 
 		if (toolCalls.length > 0) {
-			// LLM wants to use tools — enter EXECUTING state
-			this.setState("executing");
-
 			// Add assistant message to conversation
 			const assistantBlocks = this.buildAssistantBlocks(textContent, toolCalls);
 			this.contextManager.addMessage({ role: "assistant", content: assistantBlocks });
@@ -882,9 +880,10 @@ export class MainAgent extends EventEmitter<MainAgentEvents> {
 			// Execute tools and enter self-loop
 			await this.executeToolLoop(toolCalls);
 		} else {
-			// Pure text response — stay IDLE
+			// Pure text response — return to IDLE
 			this.contextManager.addMessage({ role: "assistant", content: textContent });
 			this.broadcaster.broadcast({ type: "assistant_done" });
+			this.setState("idle");
 		}
 	}
 
@@ -900,13 +899,13 @@ export class MainAgent extends EventEmitter<MainAgentEvents> {
 			lines.push(event.paneContent);
 		}
 
+		// Optimistic state: show "executing" immediately so the UI responds fast
+		this.setState("executing");
 		this.contextManager.addMessage({ role: "user", content: lines.join("\n") });
 
 		const { toolCalls, textContent } = await this.streamLLMResponse();
 
 		if (toolCalls.length > 0) {
-			this.setState("executing");
-
 			const assistantBlocks = this.buildAssistantBlocks(textContent, toolCalls);
 			this.contextManager.addMessage({ role: "assistant", content: assistantBlocks });
 			this.broadcaster.broadcast({ type: "assistant_done" });
@@ -917,7 +916,8 @@ export class MainAgent extends EventEmitter<MainAgentEvents> {
 				this.contextManager.addMessage({ role: "assistant", content: textContent });
 				this.broadcaster.broadcast({ type: "assistant_done" });
 			}
-			// dispatchNext loop naturally continues to next item
+			// Pure text / empty response — return to IDLE
+			this.setState("idle");
 		}
 	}
 
