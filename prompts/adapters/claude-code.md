@@ -32,10 +32,19 @@ Recommend enabling this early in a session (right after the first `send_to_agent
 
 ### Session Resume (--resume)
 
-Before creating a new session with `create_session`, check if a previous session id exists for the target working directory:
+When a session id is available — either **supplied directly by the user** or found in memory — you **MUST** pass it as `resume_session_id` in the `create_session` call. Omitting it discards the agent's prior conversation context irreversibly.
 
-1. Call `memory_search({ query: "sessions", category: "topic" })` or `memory_get({ path: "memory/sessions.md" })`.
-2. Look for a line matching the working directory: `- <working_dir>: <session-id>`.
-3. If found, the agent can be launched with `--resume <session-id>` to restore the previous Claude Code conversation context.
+**How to obtain a session id (in priority order):**
+
+1. **User-provided**: If the user's message contains a UUID session id (e.g., `8a9208b0-...`), use it directly — no memory lookup needed.
+2. **From memory**: Call `memory_search({ query: "sessions", category: "topic" })` or `memory_get({ path: "memory/sessions.md" })`. Look for a line matching the working directory: `- <working_dir>: <session-id>`.
+
+**How to use it:**
+
+```
+create_session({ session_name: "...", working_dir: "...", resume_session_id: "<session-id>" })
+```
+
+Do NOT call `create_session` without `resume_session_id` when a session id is available. The agent loses all file context, edit history, and conversation state without it.
 
 Note: Session ids may expire on the Claude Code side. If `--resume` fails, the agent will start a fresh session — this is expected and not an error.

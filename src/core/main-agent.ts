@@ -2,6 +2,7 @@ import { execFile } from "node:child_process";
 import { randomUUID } from "node:crypto";
 import { EventEmitter } from "node:events";
 import { readFile, stat } from "node:fs/promises";
+import { homedir } from "node:os";
 import { dirname, join } from "node:path";
 import { promisify } from "node:util";
 import type { AgentAdapter } from "../agents/adapter.js";
@@ -206,7 +207,7 @@ const TOOL_DEFINITIONS: ToolDefinition[] = [
 	{
 		name: "create_session",
 		description:
-			'Create a tmux session with the "cliclaw-" prefix and launch the coding agent in it. Must be called before send_to_agent/respond_to_agent/inspect_session. On naming conflict, returns an error so you can retry with a different name.',
+			'Create a tmux session with the "cliclaw-" prefix and launch the coding agent in it. Must be called before send_to_agent/respond_to_agent/inspect_session. On naming conflict, returns an error so you can retry with a different name.\n\nIMPORTANT: If the user provides a session id to resume (or one was found in memory), you MUST pass it as resume_session_id. Omitting it will lose the agent\'s prior conversation context.',
 		parameters: {
 			type: "object",
 			properties: {
@@ -222,7 +223,7 @@ const TOOL_DEFINITIONS: ToolDefinition[] = [
 				resume_session_id: {
 					type: "string",
 					description:
-						"Claude Code session id to resume (from exit_agent). When provided, launches with --resume instead of a fresh session.",
+						"Claude Code session id to resume. REQUIRED when the user supplies a session id or one was retrieved from memory. When provided, launches with --resume to restore the agent's prior conversation. When omitted, a blank session starts and all previous context is lost.",
 				},
 			},
 		},
@@ -1460,6 +1461,7 @@ export class MainAgent extends EventEmitter<MainAgentEvents> {
 			}
 
 			case "create_session": {
+				logger.debug("main-agent", `create_session raw args: ${JSON.stringify(args)}`);
 				let sessionName = args.session_name as string | undefined;
 				if (!sessionName) {
 					sessionName = generateSessionName("chat");
@@ -1467,7 +1469,15 @@ export class MainAgent extends EventEmitter<MainAgentEvents> {
 					sessionName = `cliclaw-${sessionName}`;
 				}
 
-				const workingDir = (args.working_dir as string | undefined) ?? process.cwd();
+				const rawWorkingDir = (args.working_dir as string | undefined) ?? process.cwd();
+				const workingDir = rawWorkingDir.startsWith("~/")
+					? join(homedir(), rawWorkingDir.slice(2))
+					: rawWorkingDir.startsWith("~")
+						? homedir()
+						: rawWorkingDir;
+				if (workingDir !== rawWorkingDir) {
+					logger.debug("main-agent", `create_session expanded working_dir: "${rawWorkingDir}" → "${workingDir}"`);
+				}
 
 				try {
 					const dirStat = await stat(workingDir);
@@ -1677,7 +1687,12 @@ export class MainAgent extends EventEmitter<MainAgentEvents> {
 			case "exec_command": {
 				const command = args.command as string;
 				const execSummary = args.summary as string;
-				const cwd = (args.cwd as string | undefined) ?? this.getSessionWorkingDir();
+				const rawCwd = (args.cwd as string | undefined) ?? this.getSessionWorkingDir();
+				const cwd = rawCwd.startsWith("~/")
+					? join(homedir(), rawCwd.slice(2))
+					: rawCwd.startsWith("~")
+						? homedir()
+						: rawCwd;
 				const timeout = (args.timeout as number | undefined) ?? 30000;
 				const MAX_OUTPUT = 10000;
 
@@ -1687,6 +1702,7 @@ export class MainAgent extends EventEmitter<MainAgentEvents> {
 					this.emitUiEvent("tool_activity", execSummary);
 				}
 
+				logger.debug("main-agent", `exec_command cwd="${cwd}" cmd=${JSON.stringify(command)}`);
 				try {
 					const execFileAsync = promisify(execFile);
 					const { stdout, stderr } = await execFileAsync("bash", ["-c", command], {
@@ -1707,6 +1723,14 @@ export class MainAgent extends EventEmitter<MainAgentEvents> {
 							terminal: false,
 						};
 					}
+					if (err.code === "ENOENT") {
+						const pathEnv = process.env.PATH ?? "(unset)";
+						logger.error("main-agent", `exec_command ENOENT: bash not found. PATH=${pathEnv}`);
+						return {
+							output: `exec_command error: bash not found (ENOENT). PATH=${pathEnv}`,
+							terminal: false,
+						};
+					}
 					if (err.code !== undefined && typeof err.code === "number") {
 						let output = `[exit code: ${err.code}]\n${err.stderr || ""}${err.stdout || ""}`.trim();
 						if (output.length > MAX_OUTPUT) {
@@ -1715,6 +1739,7 @@ export class MainAgent extends EventEmitter<MainAgentEvents> {
 						}
 						return { output, terminal: false };
 					}
+					logger.error("main-agent", `exec_command unexpected error: ${err.message} ${JSON.stringify(err)}`);
 					return { output: `exec_command error: ${err.message}`, terminal: false };
 				}
 			}
