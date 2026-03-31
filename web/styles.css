@@ -628,6 +628,94 @@ body.resizing-execution-panel .execution-resize-handle::before {
 	background: var(--text-dim);
 }
 
+.session-tab-dot.status-taken_over {
+	background: #ff9800;
+}
+
+.takeover-badge {
+	font-size: 10px;
+	color: #ff9800;
+	margin-left: 4px;
+	font-weight: 500;
+}
+
+.takeover-btn {
+	font-size: 10px;
+	padding: 1px 6px;
+	margin-left: 6px;
+	border: 1px solid rgba(255,255,255,0.15);
+	border-radius: 3px;
+	background: none;
+	color: var(--text-dim);
+	cursor: pointer;
+	line-height: 1.4;
+}
+
+.takeover-btn:hover {
+	color: var(--text);
+	border-color: rgba(255,255,255,0.3);
+}
+
+.takeover-btn.release {
+	color: #ff9800;
+	border-color: rgba(255,152,0,0.4);
+}
+
+.takeover-btn.release:hover {
+	border-color: #ff9800;
+}
+
+/* ─── Terminal Input Bar ─────────────────────────── */
+.terminal-input-bar {
+	display: flex;
+	gap: 6px;
+	padding: 8px 14px;
+	border-top: 1px solid rgba(255,255,255,0.08);
+	background: #161b22;
+	align-items: center;
+}
+
+.terminal-input-bar input {
+	flex: 1;
+	background: #0d1117;
+	border: 1px solid rgba(255,255,255,0.12);
+	border-radius: 4px;
+	color: #e6edf3;
+	padding: 4px 8px;
+	font-family: "SF Mono", "Cascadia Code", "Consolas", monospace;
+	font-size: 12px;
+	outline: none;
+}
+
+.terminal-input-bar input:focus {
+	border-color: rgba(255,152,0,0.5);
+}
+
+.terminal-input-bar button {
+	padding: 4px 10px;
+	border: 1px solid rgba(255,255,255,0.15);
+	border-radius: 4px;
+	background: rgba(255,255,255,0.05);
+	color: var(--text-dim);
+	font-size: 11px;
+	cursor: pointer;
+	white-space: nowrap;
+}
+
+.terminal-input-bar button:hover {
+	background: rgba(255,255,255,0.1);
+	color: var(--text);
+}
+
+.terminal-content.takeover-active {
+	outline: 1px solid rgba(255, 152, 0, 0.3);
+	outline-offset: -1px;
+}
+
+.terminal-content.takeover-active:focus {
+	outline-color: rgba(255, 152, 0, 0.6);
+}
+
 /* ─── Terminal Content ───────────────────────────── */
 .terminal-content {
 	flex: 1;

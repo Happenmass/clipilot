@@ -17,6 +17,8 @@ let evidenceViewEl;
 let sessionTabsEl;
 let terminalContentEl;
 let terminalEmptyEl;
+let terminalInputBarEl;
+let terminalInputEl;
 
 let ws = null;
 let currentAssistantEl = null;
@@ -802,6 +804,8 @@ function initDomReferences() {
 	sessionTabsEl = document.getElementById("session-tabs");
 	terminalContentEl = document.getElementById("terminal-content");
 	terminalEmptyEl = document.getElementById("terminal-empty");
+	terminalInputBarEl = document.getElementById("terminal-input-bar");
+	terminalInputEl = document.getElementById("terminal-input");
 }
 
 function loadSessionTerminals() {
@@ -825,6 +829,7 @@ function handleSessionTerminals(sessions) {
 			name: s.sessionName,
 			status: s.status,
 			paneContent: s.paneContent,
+			takenOver: s.takenOver || false,
 		});
 	}
 
@@ -882,7 +887,7 @@ function renderSessionTabs() {
 		btn.dataset.sessionId = id;
 
 		const dot = document.createElement("span");
-		dot.className = "session-tab-dot status-" + data.status;
+		dot.className = "session-tab-dot status-" + (data.takenOver ? "taken_over" : data.status);
 
 		const label = document.createElement("span");
 		// Strip cliclaw- prefix for display
@@ -891,6 +896,26 @@ function renderSessionTabs() {
 
 		btn.appendChild(dot);
 		btn.appendChild(label);
+
+		if (data.takenOver) {
+			const badge = document.createElement("span");
+			badge.className = "takeover-badge";
+			badge.textContent = "已接管";
+			btn.appendChild(badge);
+		}
+
+		// Takeover/release action button
+		const actionBtn = document.createElement("span");
+		actionBtn.className = "takeover-btn" + (data.takenOver ? " release" : "");
+		actionBtn.textContent = data.takenOver ? "释放" : "接管";
+		actionBtn.addEventListener("click", function (e) {
+			e.stopPropagation();
+			if (ws && ws.readyState === WebSocket.OPEN) {
+				ws.send(JSON.stringify({ type: data.takenOver ? "release" : "takeover", sessionId: id }));
+			}
+		});
+		btn.appendChild(actionBtn);
+
 		btn.addEventListener("click", function () {
 			activeSessionTab = this.dataset.sessionId;
 			renderSessionTabs();
@@ -904,6 +929,8 @@ function renderTerminalContent() {
 	if (!terminalContentEl) return;
 	if (!activeSessionTab || !sessionTerminals.has(activeSessionTab)) {
 		terminalContentEl.innerHTML = "";
+		terminalContentEl.classList.remove("takeover-active");
+		if (terminalInputBarEl) terminalInputBarEl.style.display = "none";
 		return;
 	}
 
@@ -913,6 +940,13 @@ function renderTerminalContent() {
 	const isAtBottom = el.scrollHeight - el.scrollTop - el.clientHeight < 30;
 
 	el.innerHTML = renderAnsiToHtml(data.paneContent);
+
+	// Takeover mode: show input bar and highlight terminal
+	const isTakenOver = data.takenOver || false;
+	el.classList.toggle("takeover-active", isTakenOver);
+	if (terminalInputBarEl) {
+		terminalInputBarEl.style.display = isTakenOver ? "flex" : "none";
+	}
 
 	if (isAtBottom) {
 		el.scrollTop = el.scrollHeight;
@@ -1024,6 +1058,65 @@ function initApp() {
 			closeDropdown();
 		}
 	});
+
+	// ─── Terminal input for takeover mode ──────────────
+	function sendTerminalInput(inputType, data) {
+		if (!ws || ws.readyState !== WebSocket.OPEN || !activeSessionTab) return;
+		ws.send(JSON.stringify({ type: "terminal_input", sessionId: activeSessionTab, inputType, data: data || "" }));
+	}
+
+	if (terminalInputEl) {
+		terminalInputEl.addEventListener("keydown", function (e) {
+			if (e.key === "Enter" && !e.shiftKey) {
+				e.preventDefault();
+				const text = terminalInputEl.value;
+				if (text) {
+					sendTerminalInput("text", text);
+				}
+				sendTerminalInput("enter");
+				terminalInputEl.value = "";
+			}
+		});
+	}
+
+	const ctrlCBtn = document.getElementById("terminal-ctrl-c-btn");
+	if (ctrlCBtn) ctrlCBtn.addEventListener("click", function () { sendTerminalInput("ctrl-c"); });
+
+	const escBtn = document.getElementById("terminal-esc-btn");
+	if (escBtn) escBtn.addEventListener("click", function () { sendTerminalInput("escape"); });
+
+	// Keyboard capture on terminal content (when taken over and focused)
+	if (terminalContentEl) {
+		terminalContentEl.setAttribute("tabindex", "0");
+		terminalContentEl.addEventListener("keydown", function (e) {
+			if (!activeSessionTab) return;
+			const data = sessionTerminals.get(activeSessionTab);
+			if (!data || !data.takenOver) return;
+
+			e.preventDefault();
+			if (e.ctrlKey && e.key === "c") {
+				sendTerminalInput("ctrl-c");
+			} else if (e.key === "Enter") {
+				sendTerminalInput("enter");
+			} else if (e.key === "Escape") {
+				sendTerminalInput("escape");
+			} else if (e.key === "ArrowUp") {
+				sendTerminalInput("keys", "Up");
+			} else if (e.key === "ArrowDown") {
+				sendTerminalInput("keys", "Down");
+			} else if (e.key === "ArrowLeft") {
+				sendTerminalInput("keys", "Left");
+			} else if (e.key === "ArrowRight") {
+				sendTerminalInput("keys", "Right");
+			} else if (e.key === "Backspace") {
+				sendTerminalInput("keys", "BSpace");
+			} else if (e.key === "Tab") {
+				sendTerminalInput("keys", "Tab");
+			} else if (e.key.length === 1 && !e.ctrlKey && !e.metaKey) {
+				sendTerminalInput("text", e.key);
+			}
+		});
+	}
 
 	connect();
 }
