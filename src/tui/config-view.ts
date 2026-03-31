@@ -231,8 +231,9 @@ export class ConfigView implements Component {
 
 	private cycleValue(key: string): void {
 		if (key === "agent") {
-			// Currently only one agent
-			this.config.defaultAgent = "claude-code";
+			const agents = ["claude-code", "codex"];
+			const currentIdx = agents.indexOf(this.config.defaultAgent);
+			this.config.defaultAgent = agents[(currentIdx + 1) % agents.length];
 		} else if (key === "debug") {
 			this.config.debug = !this.config.debug;
 		}

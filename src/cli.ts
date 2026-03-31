@@ -3,7 +3,7 @@ import { parseArgs } from "node:util";
 export interface CLIArgs {
 	subcommand: string | undefined;
 	isInit: boolean;
-	agent: string;
+	agent: string | undefined;
 	provider: string | undefined;
 	model: string | undefined;
 	baseUrl: string | undefined;
@@ -23,7 +23,7 @@ export function parseCliArgs(): CLIArgs {
 		args: process.argv.slice(2),
 		allowPositionals: true,
 		options: {
-			agent: { type: "string", short: "a", default: "claude-code" },
+			agent: { type: "string", short: "a" },
 			provider: { type: "string", short: "p" },
 			model: { type: "string", short: "m" },
 			"base-url": { type: "string" },
@@ -47,7 +47,7 @@ export function parseCliArgs(): CLIArgs {
 	return {
 		subcommand: isRemember || isInit ? subcommand : subcommand,
 		isInit,
-		agent: values.agent as string,
+		agent: values.agent as string | undefined,
 		provider: values.provider as string | undefined,
 		model: values.model as string | undefined,
 		baseUrl: values["base-url"] as string | undefined,
@@ -86,7 +86,7 @@ Subcommands:
   doctor                  Run health checks on the CLI environment
 
 Options:
-  -a, --agent <name>      Coding agent to use (default: claude-code)
+  -a, --agent <name>      Coding agent to use: claude-code, codex (default: from config)
                           Options: claude-code, codex, pi
   -p, --provider <name>   LLM provider for planning/analysis (default: from config)
                           Built-in: openai, anthropic, openrouter, moonshot, minimax,

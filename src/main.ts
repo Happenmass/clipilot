@@ -5,7 +5,9 @@ import { closeSync, openSync, readFileSync } from "node:fs";
 import { createConnection } from "node:net";
 import { join } from "node:path";
 import chalk from "chalk";
+import type { AgentAdapter } from "./agents/adapter.js";
 import { ClaudeCodeAdapter } from "./agents/claude-code.js";
+import { CodexAdapter } from "./agents/codex.js";
 import { parseCliArgs, printHelp, printVersion } from "./cli.js";
 import { ContextManager } from "./core/context-manager.js";
 import { MainAgent } from "./core/main-agent.js";
@@ -227,13 +229,21 @@ async function getActiveServerState(): Promise<ServerRuntimeState | null> {
 	return state;
 }
 
+function createAdapter(agentName: string): AgentAdapter {
+	switch (agentName) {
+		case "codex":
+			return new CodexAdapter();
+		case "claude-code":
+		default:
+			return new ClaudeCodeAdapter();
+	}
+}
+
 function buildDaemonChildArgs(args: ReturnType<typeof parseCliArgs>): string[] {
 	const childArgs = [
 		"--max-old-space-size=8192",
 		process.argv[1],
 		"serve",
-		"--agent",
-		args.agent,
 		"--host",
 		args.host,
 		"--port",
@@ -241,6 +251,10 @@ function buildDaemonChildArgs(args: ReturnType<typeof parseCliArgs>): string[] {
 		"--cwd",
 		args.cwd,
 	];
+
+	if (args.agent) {
+		childArgs.push("--agent", args.agent);
+	}
 
 	if (args.provider) {
 		childArgs.push("--provider", args.provider);
@@ -548,6 +562,9 @@ async function main(): Promise<void> {
 
 	const config = await loadConfig();
 
+	// Resolve agent: CLI --agent flag takes precedence over config.defaultAgent
+	const agentName = args.agent ?? config.defaultAgent;
+
 	console.log(`${chalk.bold("Cliclaw")} v0.2.0\n`);
 
 	// Check prerequisites
@@ -638,7 +655,7 @@ async function main(): Promise<void> {
 		config,
 	});
 
-	console.log(chalk.dim("Agent:    ") + args.agent);
+	console.log(chalk.dim("Agent:    ") + agentName);
 	console.log(`${chalk.dim("Provider: ")}${llmProvider} (${llmClient.getModel()})`);
 	console.log(`${chalk.dim("Host:     ")}${args.host}`);
 	console.log(`${chalk.dim("Port:     ")}${args.port}`);
@@ -648,7 +665,7 @@ async function main(): Promise<void> {
 	const stateDetector = new StateDetector(bridge, llmClient, config.stateDetector, promptLoader);
 
 	// Setup agent adapter
-	const defaultAdapter = new ClaudeCodeAdapter();
+	const defaultAdapter = createAdapter(agentName);
 
 	// Initialize ConversationStore (reuse global DB)
 	const conversationStore = new ConversationStore(memoryStore.getDb());
