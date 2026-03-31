@@ -575,13 +575,7 @@ body.resizing-execution-panel .execution-resize-handle::before {
 	display: flex;
 	gap: 0;
 	padding: 0 14px;
-	overflow-x: auto;
 	border-bottom: 1px solid rgba(255, 255, 255, 0.04);
-	scrollbar-width: none;
-}
-
-.session-tabs::-webkit-scrollbar {
-	display: none;
 }
 
 .session-tab {
@@ -598,6 +592,11 @@ body.resizing-execution-panel .execution-resize-handle::before {
 	cursor: pointer;
 	white-space: nowrap;
 	transition: color 0.15s, border-color 0.15s;
+	flex: 1;
+	min-width: 0;
+	overflow: hidden;
+	text-overflow: ellipsis;
+	justify-content: center;
 }
 
 .session-tab:hover {
@@ -607,6 +606,12 @@ body.resizing-execution-panel .execution-resize-handle::before {
 .session-tab.active {
 	color: var(--text);
 	border-bottom-color: var(--text);
+}
+
+.session-tab-label {
+	overflow: hidden;
+	text-overflow: ellipsis;
+	min-width: 0;
 }
 
 .session-tab-dot {

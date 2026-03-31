@@ -891,6 +891,7 @@ function renderSessionTabs() {
 		dot.className = "session-tab-dot status-" + (data.takenOver ? "taken_over" : data.status);
 
 		const label = document.createElement("span");
+		label.className = "session-tab-label";
 		// Strip cliclaw- prefix for display
 		const displayName = data.name.startsWith("cliclaw-") ? data.name.slice(8) : data.name;
 		label.textContent = displayName;
