@@ -108,12 +108,8 @@ export class CommandRouter {
 		this.executionEventStore?.clear();
 		this.uiEventStore?.clear();
 
-		// Broadcast clear event to all clients
+		// Broadcast clear event to all clients (frontend shows the confirmation message)
 		this.broadcaster.broadcast({ type: "clear" });
-		this.broadcaster.broadcast({
-			type: "system",
-			message: "对话已清空",
-		});
 
 		logger.info("command-router", "Conversation cleared");
 	}
@@ -125,10 +121,10 @@ export class CommandRouter {
 			await this.mainAgent.waitForIdle();
 		}
 
-		if (!this.contextManager.shouldCompress()) {
+		if (this.contextManager.getConversationLength() === 0) {
 			this.broadcaster.broadcast({
 				type: "system",
-				message: "对话上下文较短，无需压缩",
+				message: "当前没有对话内容，无需压缩",
 			});
 			return;
 		}

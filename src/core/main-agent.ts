@@ -624,6 +624,8 @@ export class MainAgent extends EventEmitter<MainAgentEvents> {
 		}
 		if (this.contextManager.shouldCompress()) {
 			await this.contextManager.compress();
+			this.broadcaster.broadcast({ type: "clear" });
+			this.broadcaster.broadcast({ type: "system", message: "上下文已压缩，历史对话已清空" });
 		}
 
 		const { system, messages } = this.contextManager.prepareForLLM();
@@ -769,6 +771,8 @@ export class MainAgent extends EventEmitter<MainAgentEvents> {
 			}
 			if (this.contextManager.shouldCompress()) {
 				await this.contextManager.compress();
+				this.broadcaster.broadcast({ type: "clear" });
+				this.broadcaster.broadcast({ type: "system", message: "上下文已压缩，历史对话已清空" });
 			}
 
 			// 4. Next LLM call

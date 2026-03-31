@@ -653,6 +653,7 @@ function handleServerMessage(data) {
 			messagesEl.innerHTML = "";
 			currentAssistantEl = null;
 			resetExecutionCards();
+			addMessageBubble("system", "对话已清空");
 			break;
 	}
 }
