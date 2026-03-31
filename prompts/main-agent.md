@@ -242,19 +242,27 @@ Before sending prompts to the coding agent, ensure a tmux session exists:
    d. **If not found**: Search deeper with `find ~ -maxdepth 4 -type d -name "<project>"`, or ask the user for the path.
    e. **If the project is new**: Create it with `mkdir -p <target_dir>`. A new empty directory is a valid confirmed root.
 2. **Initialize OpenSpec** (for complex tasks): Run `exec_command("openspec init --tools {{openspec_tool_name}} 2>&1", cwd=<target_dir>)` to set up the OpenSpec workflow in the target directory. This must happen BEFORE launching the agent so the agent has `{{openspec_cmd_wildcard}}` skill commands available from the start. Skip this step for simple tasks that don't need OpenSpec.
-3. **Check for resumable sessions**: Call `memory_get({ path: "memory/sessions.md" })` to check if a previous session id exists for the target working directory.
-4. **Launch the agent in the confirmed directory**: Call `create_session` with `working_dir` set to the target project directory. If a resumable session id was found in step 3 or supplied by user, pass it as `resume_session_id` to restore the previous conversation context (e.g., `create_session({ working_dir: "/path/to/project", resume_session_id: "<session-id>" })`). Without `resume_session_id`, a fresh agent session is started.
-5. If the session name conflicts, use `list_cliclaw_sessions` to see existing sessions, then retry with a different name.
-6. After session creation, use `send_to_agent` to send your first instruction with the user's task description and any relevant context.
-7. The session persists across tasks — do not call `create_session` again unless the session was lost. Use `list_cliclaw_sessions` to check.
+3. **Check for resumable sessions**: Call `memory_get({ path: "memory/sessions.md" })` to check if a previous session exists for the target working directory.
+4. **Judge task relevance before resuming**: A saved session should ONLY be resumed when **both** conditions are met:
+   a. The working directory matches the target project.
+   b. The user's current task is **related to** the previous session's task (recorded in the `task` field of `sessions.md`).
+   If the directory matches but the task is unrelated (e.g., previous task was "add login page" but current task is "fix CI pipeline"), do NOT pass `resume_session_id` — start a fresh session instead. When in doubt, ask the user whether to resume or start fresh.
+5. **Launch the agent in the confirmed directory**: Call `create_session` with `working_dir` set to the target project directory. If a resumable and task-relevant session id was found in step 4, pass it as `resume_session_id` to restore the previous conversation context (e.g., `create_session({ working_dir: "/path/to/project", resume_session_id: "<session-id>" })`). Without `resume_session_id`, a fresh agent session is started.
+6. If the session name conflicts, use `list_cliclaw_sessions` to see existing sessions, then retry with a different name.
+7. After session creation, use `send_to_agent` to send your first instruction with the user's task description and any relevant context.
+8. The session persists across tasks — do not call `create_session` again unless the session was lost. Use `list_cliclaw_sessions` to check.
 
 ### Session Termination and Persistence
 
 When you need to terminate the coding agent (e.g., switching projects, freeing resources, or ending a work session):
 
 1. Call `kill_session` with a summary of why the session is being terminated. For multi-session setups, pass `session_id` to target a specific session. Use `session_id: "all"` to terminate all sessions.
-2. If the result contains a `Session ID`, persist it by calling `memory_write({ path: "memory/sessions.md", content: "- <working_dir>: <session_id>\n" })`.
-3. The saved session id allows resuming the agent's conversation later, preserving its full context.
+2. If the result contains a `Session ID`, persist it by calling `memory_write` with the following format:
+   ```
+   memory_write({ path: "memory/sessions.md", content: "- <working_dir> | <session_id> | task: <brief task summary>\n" })
+   ```
+   The `task` field is a concise description of what was being worked on (e.g., "add user authentication", "refactor database layer"). This is used later to judge whether a new request is related enough to resume this session.
+3. The saved session id allows resuming the agent's conversation later, preserving its full context — but only when the new task is related to the saved task.
 
 ## Autonomous Decision Guidelines
 
