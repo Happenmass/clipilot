@@ -21,6 +21,7 @@ import { loadPersistentMemory } from "./memory/persistent.js";
 import { MemoryStore } from "./memory/store.js";
 import { syncMemoryFiles } from "./memory/sync.js";
 import { ConversationStore } from "./persistence/conversation-store.js";
+import { SessionStore } from "./persistence/session-store.js";
 import { ChatBroadcaster } from "./server/chat-broadcaster.js";
 import { ExecutionEventStore } from "./server/execution-events.js";
 import { CommandRegistry } from "./server/command-registry.js";
@@ -667,8 +668,9 @@ async function main(): Promise<void> {
 	// Setup agent adapter
 	const defaultAdapter = createAdapter(agentName);
 
-	// Initialize ConversationStore (reuse global DB)
+	// Initialize ConversationStore and SessionStore (reuse global DB)
 	const conversationStore = new ConversationStore(memoryStore.getDb());
+	const sessionStore = new SessionStore(memoryStore.getDb());
 
 	// Initialize ChatBroadcaster
 	const broadcaster = new ChatBroadcaster();
@@ -758,6 +760,7 @@ async function main(): Promise<void> {
 		syncMemory,
 		embeddingProvider,
 		skillRegistry,
+		sessionStore,
 		globalDir,
 		workspaceDir: args.cwd,
 		debug: config.debug,
@@ -772,6 +775,26 @@ async function main(): Promise<void> {
 	});
 
 	mainAgent.setupSessionMonitor();
+
+	// Restore persisted sessions (verify tmux is still alive, discard dead ones)
+	const persistedSessions = sessionStore.loadSessions();
+	if (persistedSessions.length > 0) {
+		let restoredCount = 0;
+		for (const s of persistedSessions) {
+			const alive = await bridge.hasSession(s.sessionId);
+			if (alive) {
+				mainAgent.restoreSession(s.sessionId, { paneTarget: s.paneTarget, workingDir: s.workingDir }, s.takenOver);
+				restoredCount++;
+			} else {
+				sessionStore.deleteSession(s.sessionId);
+				logger.info("main", `Discarded dead session: ${s.sessionId}`);
+			}
+		}
+		if (restoredCount > 0) {
+			logger.info("main", `Restored ${restoredCount} agent session(s)`);
+			console.log(chalk.dim(`Restored ${restoredCount} agent session(s) from previous run`));
+		}
+	}
 
 	// Log state changes
 	mainAgent.on("state_change", (state) => {

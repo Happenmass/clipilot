@@ -121,6 +121,7 @@ export async function startServer(opts: ServerOptions): Promise<ServerInstance> 
 			sessionId: string;
 			status: string;
 			paneContent: string;
+			takenOver: boolean;
 		}> = [];
 		for (const s of activeSessions) {
 			let paneContent = "";
@@ -138,6 +139,7 @@ export async function startServer(opts: ServerOptions): Promise<ServerInstance> 
 				sessionId: s.sessionId,
 				status: s.status,
 				paneContent,
+				takenOver: s.takenOver,
 			});
 		}
 		return sessions;
@@ -202,7 +204,7 @@ export async function startServer(opts: ServerOptions): Promise<ServerInstance> 
 			ws.close(1008, "Unauthorized");
 			return;
 		}
-		handleWebSocket(ws, { mainAgent, broadcaster, commandRouter });
+		handleWebSocket(ws, { mainAgent, broadcaster, commandRouter, bridge });
 	});
 
 	// ─── Start listening ────────────────────────────────

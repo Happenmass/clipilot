@@ -23,6 +23,7 @@ import type {
 	ExecutionWorkspaceEvidence,
 } from "../server/execution-events.js";
 import type { UiEvent, UiEventStore, UiEventType } from "../server/ui-events.js";
+import type { SessionStore } from "../persistence/session-store.js";
 import type { SkillRegistry } from "../skills/registry.js";
 import type { TmuxBridge } from "../tmux/bridge.js";
 import type { StateDetector } from "../tmux/state-detector.js";
@@ -366,6 +367,7 @@ export class MainAgent extends EventEmitter<MainAgentEvents> {
 	private isDispatching = false;
 	private sessions: Map<string, SessionEntry> = new Map();
 	private activeSessionId: string | null = null;
+	private takenOverSessions = new Set<string>();
 	private memoryStore: MemoryStore | null = null;
 	private syncMemory: (() => Promise<void>) | null = null;
 	private embeddingProvider: EmbeddingProvider | null = null;
@@ -374,6 +376,7 @@ export class MainAgent extends EventEmitter<MainAgentEvents> {
 	private firstLLMCall = true;
 	private execCommandBroadcastCount = 0;
 	private sessionMonitor: SessionMonitor | null = null;
+	private sessionStore: SessionStore | null = null;
 	private globalDir: string;
 	private workspaceDir: string;
 	private searchConfig: HybridSearchConfig = {
@@ -402,6 +405,7 @@ export class MainAgent extends EventEmitter<MainAgentEvents> {
 		embeddingProvider?: EmbeddingProvider | null;
 		searchConfig?: Partial<HybridSearchConfig>;
 		skillRegistry?: SkillRegistry;
+		sessionStore?: SessionStore;
 		globalDir?: string;
 		workspaceDir?: string;
 		debug?: boolean;
@@ -420,6 +424,7 @@ export class MainAgent extends EventEmitter<MainAgentEvents> {
 		this.syncMemory = opts.syncMemory ?? null;
 		this.embeddingProvider = opts.embeddingProvider ?? null;
 		this.skillRegistry = opts.skillRegistry ?? null;
+		this.sessionStore = opts.sessionStore ?? null;
 		this.globalDir = opts.globalDir ?? "";
 		this.workspaceDir = opts.workspaceDir ?? "";
 		this.debug = opts.debug ?? false;
@@ -441,8 +446,20 @@ export class MainAgent extends EventEmitter<MainAgentEvents> {
 	}
 
 	/** Return all active sessions with their current status. */
-	getActiveSessions(): Array<{ sessionName: string; sessionId: string; paneTarget: string; status: string }> {
-		const result: Array<{ sessionName: string; sessionId: string; paneTarget: string; status: string }> = [];
+	getActiveSessions(): Array<{
+		sessionName: string;
+		sessionId: string;
+		paneTarget: string;
+		status: string;
+		takenOver: boolean;
+	}> {
+		const result: Array<{
+			sessionName: string;
+			sessionId: string;
+			paneTarget: string;
+			status: string;
+			takenOver: boolean;
+		}> = [];
 		for (const [id, entry] of this.sessions) {
 			const task = this.sessionMonitor?.getTask(id);
 			let status: string;
@@ -453,9 +470,54 @@ export class MainAgent extends EventEmitter<MainAgentEvents> {
 			} else {
 				status = "idle";
 			}
-			result.push({ sessionName: id, sessionId: id, paneTarget: entry.paneTarget, status });
+			result.push({
+				sessionName: id,
+				sessionId: id,
+				paneTarget: entry.paneTarget,
+				status,
+				takenOver: this.takenOverSessions.has(id),
+			});
 		}
 		return result;
+	}
+
+	/** Mark or unmark a session as human-taken-over. */
+	setTakenOver(sessionId: string, takenOver: boolean): void {
+		if (!this.sessions.has(sessionId)) return;
+		if (takenOver) {
+			this.takenOverSessions.add(sessionId);
+		} else {
+			this.takenOverSessions.delete(sessionId);
+		}
+		this.sessionStore?.setTakenOver(sessionId, takenOver);
+		this.onSessionChange?.();
+	}
+
+	/** Check if a session is human-taken-over. */
+	isTakenOver(sessionId: string): boolean {
+		return this.takenOverSessions.has(sessionId);
+	}
+
+	/** Get the pane target for a session (used by ws-handler for terminal input). */
+	getSessionPaneTarget(sessionId: string): string | undefined {
+		return this.sessions.get(sessionId)?.paneTarget;
+	}
+
+	/**
+	 * Restore a persisted session into the in-memory sessions map.
+	 * Called during startup after verifying the tmux session is still alive.
+	 * The most recently restored session becomes the active session.
+	 */
+	restoreSession(sessionId: string, entry: SessionEntry, takenOver = false): void {
+		this.sessions.set(sessionId, entry);
+		this.activeSessionId = sessionId;
+		if (takenOver) {
+			this.takenOverSessions.add(sessionId);
+		}
+		logger.info(
+			"main-agent",
+			`Restored session: ${sessionId}, pane: ${entry.paneTarget}, cwd: ${entry.workingDir}${takenOver ? " (taken over)" : ""}`,
+		);
 	}
 
 	setupSessionMonitor(): void {
@@ -504,6 +566,11 @@ export class MainAgent extends EventEmitter<MainAgentEvents> {
 		if (!entry) {
 			return {
 				error: `Session "${id}" not found. Use list_cliclaw_sessions to see available sessions.`,
+			};
+		}
+		if (this.takenOverSessions.has(id)) {
+			return {
+				error: `Session "${id}" 已被人工接管，无法自动操作。请先在 Web UI 释放该会话。`,
 			};
 		}
 		return { entry, id };
@@ -1509,6 +1576,7 @@ export class MainAgent extends EventEmitter<MainAgentEvents> {
 						resumeSessionId,
 					});
 					this.sessions.set(sessionName, { paneTarget, workingDir });
+					this.sessionStore?.saveSession(sessionName, { paneTarget, workingDir });
 					this.activeSessionId = sessionName;
 					this.stateDetector.setCharacteristics(this.adapter.getCharacteristics());
 					const workspace = await this.collectWorkspaceEvidence(workingDir);
@@ -1600,6 +1668,7 @@ export class MainAgent extends EventEmitter<MainAgentEvents> {
 				this.sessionMonitor?.cleanup(exitSessionId);
 				this.workQueue.removeAgentEventsBySessionId(exitSessionId);
 				this.sessions.delete(exitSessionId);
+				this.sessionStore?.deleteSession(exitSessionId);
 				if (this.activeSessionId === exitSessionId) {
 					const remaining = [...this.sessions.keys()];
 					this.activeSessionId = remaining.length > 0 ? remaining[remaining.length - 1] : null;
@@ -1635,6 +1704,7 @@ export class MainAgent extends EventEmitter<MainAgentEvents> {
 								await this.bridge.killSession(s.name);
 								killed.push(s.name);
 								this.sessions.delete(s.name);
+								this.sessionStore?.deleteSession(s.name);
 							} catch {
 								/* best-effort */
 							}
@@ -1660,6 +1730,7 @@ export class MainAgent extends EventEmitter<MainAgentEvents> {
 					this.sessionMonitor?.cleanup(targetName);
 					this.workQueue.removeAgentEventsBySessionId(targetName);
 					this.sessions.delete(targetName);
+					this.sessionStore?.deleteSession(targetName);
 					if (this.activeSessionId === targetName) {
 						const remaining = [...this.sessions.keys()];
 						this.activeSessionId = remaining.length > 0 ? remaining[remaining.length - 1] : null;

@@ -1,4 +1,4 @@
-import { describe, it, expect, vi, beforeEach } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { MainAgent } from "../../src/core/main-agent.js";
 import type { LLMStreamEvent } from "../../src/llm/types.js";
 
@@ -1242,6 +1242,7 @@ describe("MainAgent State Machine", () => {
 				sessionId: "cliclaw-auth",
 				paneTarget: "sess:0.0",
 				status: "idle",
+				takenOver: false,
 			});
 		});
 
@@ -1513,6 +1514,406 @@ describe("MainAgent State Machine", () => {
 
 			// Agent should be back to idle
 			expect(agent.state).toBe("idle");
+		});
+	});
+
+	describe("session persistence (SessionStore integration)", () => {
+		function createMockSessionStore() {
+			return {
+				saveSession: vi.fn(),
+				deleteSession: vi.fn(),
+				loadSessions: vi.fn().mockReturnValue([]),
+			} as any;
+		}
+
+		it("should call sessionStore.saveSession on create_session", async () => {
+			const mockSessionStore = createMockSessionStore();
+			const agent = setupAgent(
+				[toolCallResponse("create_session", { session_name: "test" }), textResponse("Done.")],
+				{ sessionStore: mockSessionStore },
+			);
+
+			await agent.handleMessage("create session");
+
+			expect(mockSessionStore.saveSession).toHaveBeenCalledTimes(1);
+			expect(mockSessionStore.saveSession).toHaveBeenCalledWith("cliclaw-test", {
+				paneTarget: "test-session:0.0",
+				workingDir: expect.any(String),
+			});
+		});
+
+		it("should call sessionStore.deleteSession on exit_agent", async () => {
+			const mockSessionStore = createMockSessionStore();
+			const agent = setupAgent(
+				[
+					toolCallResponse("create_session", { session_name: "test" }, "tc1"),
+					toolCallResponse("exit_agent", { summary: "exit" }, "tc2"),
+					textResponse("Done."),
+				],
+				{ sessionStore: mockSessionStore },
+				{ withMonitor: true },
+			);
+			mockAdapter.exitAgent = vi.fn().mockResolvedValue({ content: "exited", sessionId: null });
+
+			await agent.handleMessage("create and exit");
+
+			expect(mockSessionStore.deleteSession).toHaveBeenCalledWith("cliclaw-test");
+		});
+
+		it("should call sessionStore.deleteSession on kill_session (single)", async () => {
+			const mockSessionStore = createMockSessionStore();
+			const agent = setupAgent(
+				[
+					toolCallResponse("create_session", { session_name: "test" }, "tc1"),
+					toolCallResponse("kill_session", { session_id: "cliclaw-test", summary: "kill" }, "tc2"),
+					textResponse("Done."),
+				],
+				{ sessionStore: mockSessionStore },
+				{ withMonitor: true },
+			);
+			mockBridge.hasSession.mockResolvedValueOnce(false).mockResolvedValueOnce(true);
+			mockBridge.killSession = vi.fn().mockResolvedValue(undefined);
+
+			await agent.handleMessage("create and kill");
+
+			expect(mockSessionStore.deleteSession).toHaveBeenCalledWith("cliclaw-test");
+		});
+
+		it("should call sessionStore.deleteSession for each session on kill_session all", async () => {
+			const mockSessionStore = createMockSessionStore();
+			const agent = setupAgent(
+				[
+					toolCallResponse("create_session", { session_name: "s1" }, "tc1"),
+					toolCallResponse("create_session", { session_name: "s2" }, "tc2"),
+					toolCallResponse("kill_session", { session_id: "all", summary: "kill all" }, "tc3"),
+					textResponse("Done."),
+				],
+				{ sessionStore: mockSessionStore },
+			);
+			mockBridge.listCliclawSessions.mockResolvedValue([{ name: "cliclaw-s1", windows: 1, attached: false }, { name: "cliclaw-s2", windows: 1, attached: false }]);
+			mockBridge.killSession = vi.fn().mockResolvedValue(undefined);
+
+			await agent.handleMessage("create two and kill all");
+
+			expect(mockSessionStore.deleteSession).toHaveBeenCalledWith("cliclaw-s1");
+			expect(mockSessionStore.deleteSession).toHaveBeenCalledWith("cliclaw-s2");
+		});
+
+		it("should not fail when sessionStore is not provided", async () => {
+			const agent = setupAgent([
+				toolCallResponse("create_session", { session_name: "test" }),
+				textResponse("Done."),
+			]);
+			// No sessionStore — should not throw
+			await expect(agent.handleMessage("create session")).resolves.toBeUndefined();
+		});
+	});
+
+	describe("restoreSession", () => {
+		it("should restore a session into the sessions map", () => {
+			const agent = setupAgent([]);
+			agent.restoreSession("cliclaw-restored", { paneTarget: "cliclaw-restored:0.0", workingDir: "/work" });
+
+			const sessions = agent.getActiveSessions();
+			expect(sessions).toHaveLength(1);
+			expect(sessions[0].sessionId).toBe("cliclaw-restored");
+			expect(sessions[0].paneTarget).toBe("cliclaw-restored:0.0");
+		});
+
+		it("should set the restored session as active (last wins)", () => {
+			const agent = setupAgent([]);
+			agent.restoreSession("cliclaw-a", { paneTarget: "a:0.0", workingDir: "/a" });
+			agent.restoreSession("cliclaw-b", { paneTarget: "b:0.0", workingDir: "/b" });
+
+			const sessions = agent.getActiveSessions();
+			expect(sessions).toHaveLength(2);
+			expect((agent as any).activeSessionId).toBe("cliclaw-b");
+		});
+
+		it("should allow restored sessions to be used by send_to_agent", async () => {
+			// Restore a session then try to send_to_agent — it should route to the restored session
+			const agent = setupAgent(
+				[
+					toolCallResponse("send_to_agent", { prompt: "hello", summary: "test" }),
+					textResponse("Done."),
+				],
+				{},
+				{ withMonitor: true },
+			);
+			agent.restoreSession("cliclaw-restored", { paneTarget: "cliclaw-restored:0.0", workingDir: "/work" });
+
+			await agent.handleMessage("send hello to agent");
+
+			// sendPrompt should have been called on the restored session's pane
+			expect(mockAdapter.sendPrompt).toHaveBeenCalledWith(
+				mockBridge,
+				"cliclaw-restored:0.0",
+				expect.any(String),
+			);
+		});
+
+		it("should allow restored sessions to be killed", async () => {
+			const mockSessionStore = {
+				saveSession: vi.fn(),
+				deleteSession: vi.fn(),
+				loadSessions: vi.fn().mockReturnValue([]),
+			} as any;
+			const agent = setupAgent(
+				[
+					toolCallResponse("kill_session", { session_id: "cliclaw-restored", summary: "kill" }),
+					textResponse("Done."),
+				],
+				{ sessionStore: mockSessionStore },
+				{ withMonitor: true },
+			);
+			agent.restoreSession("cliclaw-restored", { paneTarget: "cliclaw-restored:0.0", workingDir: "/work" });
+			mockBridge.hasSession.mockResolvedValueOnce(true);
+			mockBridge.killSession = vi.fn().mockResolvedValue(undefined);
+
+			await agent.handleMessage("kill the restored session");
+
+			expect(mockBridge.killSession).toHaveBeenCalledWith("cliclaw-restored");
+			expect(mockSessionStore.deleteSession).toHaveBeenCalledWith("cliclaw-restored");
+			expect(agent.getActiveSessions()).toHaveLength(0);
+		});
+
+		it("should not trigger onSessionChange during restore", () => {
+			const callback = vi.fn();
+			const agent = setupAgent([]);
+			agent.setOnSessionChange(callback);
+
+			agent.restoreSession("cliclaw-a", { paneTarget: "a:0.0", workingDir: "/a" });
+
+			// restoreSession is a cold restore — no broadcast needed
+			expect(callback).not.toHaveBeenCalled();
+		});
+	});
+
+	describe("session persistence with real SessionStore", () => {
+		let tmpDir: string;
+		let realDb: any;
+		let realSessionStore: any;
+
+		beforeEach(async () => {
+			const { mkdtemp } = await import("node:fs/promises");
+			const { tmpdir } = await import("node:os");
+			const { join } = await import("node:path");
+			const Database = (await import("better-sqlite3")).default;
+
+			tmpDir = await mkdtemp(join(tmpdir(), "cliclaw-agent-session-test-"));
+			realDb = new Database(join(tmpDir, "test.sqlite"));
+			realDb.pragma("journal_mode = WAL");
+
+			const { SessionStore } = await import("../../src/persistence/session-store.js");
+			realSessionStore = new SessionStore(realDb);
+		});
+
+		afterEach(async () => {
+			realDb?.close();
+			if (tmpDir) {
+				const { rm } = await import("node:fs/promises");
+				await rm(tmpDir, { recursive: true, force: true });
+			}
+		});
+
+		it("should persist session to real SQLite on create_session", async () => {
+			const agent = setupAgent(
+				[toolCallResponse("create_session", { session_name: "real-test" }), textResponse("Done.")],
+				{ sessionStore: realSessionStore },
+			);
+
+			await agent.handleMessage("create session");
+
+			const sessions = realSessionStore.loadSessions();
+			expect(sessions).toHaveLength(1);
+			expect(sessions[0].sessionId).toBe("cliclaw-real-test");
+			expect(sessions[0].paneTarget).toBe("test-session:0.0");
+		});
+
+		it("should remove from real SQLite on exit_agent", async () => {
+			const agent = setupAgent(
+				[
+					toolCallResponse("create_session", { session_name: "real-exit" }, "tc1"),
+					toolCallResponse("exit_agent", { summary: "exit" }, "tc2"),
+					textResponse("Done."),
+				],
+				{ sessionStore: realSessionStore },
+				{ withMonitor: true },
+			);
+			mockAdapter.exitAgent = vi.fn().mockResolvedValue({ content: "exited", sessionId: null });
+
+			await agent.handleMessage("create and exit");
+
+			expect(realSessionStore.loadSessions()).toHaveLength(0);
+		});
+
+		it("full lifecycle: create → persist → simulate restart → restore", async () => {
+			// Phase 1: create sessions
+			const agent1 = setupAgent(
+				[
+					toolCallResponse("create_session", { session_name: "svc-a" }, "tc1"),
+					toolCallResponse("create_session", { session_name: "svc-b" }, "tc2"),
+					textResponse("Done."),
+				],
+				{ sessionStore: realSessionStore },
+			);
+
+			await agent1.handleMessage("create two sessions");
+
+			// Verify persisted
+			const persisted = realSessionStore.loadSessions();
+			expect(persisted).toHaveLength(2);
+			expect(persisted[0].sessionId).toBe("cliclaw-svc-a");
+			expect(persisted[1].sessionId).toBe("cliclaw-svc-b");
+
+			// Phase 2: simulate restart — new agent, load from store, restore alive ones
+			const agent2 = setupAgent([], { sessionStore: realSessionStore });
+			const loaded = realSessionStore.loadSessions();
+
+			// Simulate: svc-a is alive, svc-b is dead
+			for (const s of loaded) {
+				if (s.sessionId === "cliclaw-svc-a") {
+					agent2.restoreSession(s.sessionId, { paneTarget: s.paneTarget, workingDir: s.workingDir });
+				} else {
+					realSessionStore.deleteSession(s.sessionId);
+				}
+			}
+
+			// Verify in-memory state
+			const restored = agent2.getActiveSessions();
+			expect(restored).toHaveLength(1);
+			expect(restored[0].sessionId).toBe("cliclaw-svc-a");
+
+			// Verify SQLite state
+			const remaining = realSessionStore.loadSessions();
+			expect(remaining).toHaveLength(1);
+			expect(remaining[0].sessionId).toBe("cliclaw-svc-a");
+		});
+
+		it("create → kill all → verify SQLite is empty", async () => {
+			const agent = setupAgent(
+				[
+					toolCallResponse("create_session", { session_name: "k1" }, "tc1"),
+					toolCallResponse("create_session", { session_name: "k2" }, "tc2"),
+					toolCallResponse("kill_session", { session_id: "all", summary: "kill all" }, "tc3"),
+					textResponse("Done."),
+				],
+				{ sessionStore: realSessionStore },
+			);
+			mockBridge.listCliclawSessions.mockResolvedValue([
+				{ name: "cliclaw-k1", windows: 1, attached: false },
+				{ name: "cliclaw-k2", windows: 1, attached: false },
+			]);
+			mockBridge.killSession = vi.fn().mockResolvedValue(undefined);
+
+			await agent.handleMessage("create two and kill all");
+
+			expect(realSessionStore.loadSessions()).toHaveLength(0);
+			expect(agent.getActiveSessions()).toHaveLength(0);
+		});
+	});
+
+	describe("human takeover (takenOver)", () => {
+		it("setTakenOver should mark session and call sessionStore", () => {
+			const mockSessionStore = {
+				saveSession: vi.fn(),
+				deleteSession: vi.fn(),
+				loadSessions: vi.fn().mockReturnValue([]),
+				setTakenOver: vi.fn(),
+			} as any;
+			const agent = setupAgent([], { sessionStore: mockSessionStore });
+			agent.restoreSession("cliclaw-test", { paneTarget: "t:0.0", workingDir: "/t" });
+
+			agent.setTakenOver("cliclaw-test", true);
+
+			expect(agent.isTakenOver("cliclaw-test")).toBe(true);
+			expect(mockSessionStore.setTakenOver).toHaveBeenCalledWith("cliclaw-test", true);
+		});
+
+		it("setTakenOver(false) should release session", () => {
+			const mockSessionStore = {
+				saveSession: vi.fn(),
+				deleteSession: vi.fn(),
+				loadSessions: vi.fn().mockReturnValue([]),
+				setTakenOver: vi.fn(),
+			} as any;
+			const agent = setupAgent([], { sessionStore: mockSessionStore });
+			agent.restoreSession("cliclaw-test", { paneTarget: "t:0.0", workingDir: "/t" });
+
+			agent.setTakenOver("cliclaw-test", true);
+			agent.setTakenOver("cliclaw-test", false);
+
+			expect(agent.isTakenOver("cliclaw-test")).toBe(false);
+		});
+
+		it("setTakenOver should trigger onSessionChange", () => {
+			const callback = vi.fn();
+			const agent = setupAgent([]);
+			agent.setOnSessionChange(callback);
+			agent.restoreSession("cliclaw-test", { paneTarget: "t:0.0", workingDir: "/t" });
+
+			agent.setTakenOver("cliclaw-test", true);
+
+			expect(callback).toHaveBeenCalledTimes(1);
+		});
+
+		it("setTakenOver should be no-op for non-existent session", () => {
+			const agent = setupAgent([]);
+			agent.setTakenOver("cliclaw-nonexistent", true);
+			expect(agent.isTakenOver("cliclaw-nonexistent")).toBe(false);
+		});
+
+		it("getActiveSessions should include takenOver field", () => {
+			const agent = setupAgent([]);
+			agent.restoreSession("cliclaw-a", { paneTarget: "a:0.0", workingDir: "/a" });
+			agent.restoreSession("cliclaw-b", { paneTarget: "b:0.0", workingDir: "/b" });
+
+			agent.setTakenOver("cliclaw-a", true);
+
+			const sessions = agent.getActiveSessions();
+			const a = sessions.find((s: any) => s.sessionId === "cliclaw-a");
+			const b = sessions.find((s: any) => s.sessionId === "cliclaw-b");
+			expect(a!.takenOver).toBe(true);
+			expect(b!.takenOver).toBe(false);
+		});
+
+		it("resolveSession should block send_to_agent for taken-over session", async () => {
+			const agent = setupAgent(
+				[
+					toolCallResponse("send_to_agent", { prompt: "hello", summary: "test" }),
+					textResponse("Done."),
+				],
+				{},
+				{ withMonitor: true },
+			);
+			agent.restoreSession("cliclaw-taken", { paneTarget: "t:0.0", workingDir: "/t" });
+			agent.setTakenOver("cliclaw-taken", true);
+
+			await agent.handleMessage("send hello");
+
+			// send_to_agent should NOT have been called on the adapter
+			expect(mockAdapter.sendPrompt).not.toHaveBeenCalled();
+		});
+
+		it("restoreSession with takenOver=true should restore takeover state", () => {
+			const agent = setupAgent([]);
+			agent.restoreSession("cliclaw-tk", { paneTarget: "tk:0.0", workingDir: "/tk" }, true);
+
+			expect(agent.isTakenOver("cliclaw-tk")).toBe(true);
+			const sessions = agent.getActiveSessions();
+			expect(sessions[0].takenOver).toBe(true);
+		});
+
+		it("getSessionPaneTarget should return pane target for existing session", () => {
+			const agent = setupAgent([]);
+			agent.restoreSession("cliclaw-pt", { paneTarget: "pt:0.0", workingDir: "/pt" });
+
+			expect(agent.getSessionPaneTarget("cliclaw-pt")).toBe("pt:0.0");
+		});
+
+		it("getSessionPaneTarget should return undefined for non-existent session", () => {
+			const agent = setupAgent([]);
+			expect(agent.getSessionPaneTarget("cliclaw-none")).toBeUndefined();
 		});
 	});
 });
