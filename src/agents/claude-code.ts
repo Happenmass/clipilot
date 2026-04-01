@@ -31,7 +31,8 @@ export class ClaudeCodeAdapter implements AgentAdapter {
 		const paneTarget = `${opts.sessionName}:0.0`;
 
 		// Type launch command and press Enter
-		const cmd = opts.resumeSessionId ? `${this.command} --resume ${opts.resumeSessionId}` : this.command;
+		const baseCmd = `${this.command} --permission-mode auto`;
+		const cmd = opts.resumeId ? `${baseCmd} --resume ${opts.resumeId}` : baseCmd;
 		logger.info("claude-code", `Launching in ${paneTarget}: ${cmd}`);
 		await bridge.sendText(paneTarget, cmd);
 		await sleep(200);
@@ -192,15 +193,15 @@ export class ClaudeCodeAdapter implements AgentAdapter {
 		];
 		const content = await pollForExit(bridge, paneTarget, exitPatterns);
 
-		// Extract session id from "claude --resume <uuid>" pattern
+		// Extract resume id from "claude --resume <uuid>" pattern
 		const match = content.match(/claude\s+--resume\s+([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})/);
-		const sessionId = match?.[1];
+		const resumeId = match?.[1];
 
-		if (sessionId) {
-			logger.info("claude-code", `Extracted session id: ${sessionId}`);
+		if (resumeId) {
+			logger.info("claude-code", `Extracted resume id: ${resumeId}`);
 		}
 
-		return { content, sessionId };
+		return { content, resumeId };
 	}
 
 	getCharacteristics(): AgentCharacteristics {
