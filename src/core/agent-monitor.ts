@@ -12,7 +12,7 @@ import type { WorkQueue } from "./work-queue.js";
 
 export interface TaskInfo {
 	taskId: string;
-	sessionId: string;
+	agentId: string;
 	status: "running" | "waiting_input";
 	summary: string;
 	taskContext: string;
@@ -24,7 +24,7 @@ export interface TaskInfo {
 export type DispatchResult = { dispatched: true; task: TaskInfo } | { dispatched: false; busy: BusyResult };
 
 export interface BusyResult {
-	sessionId: string;
+	agentId: string;
 	currentTask: TaskInfo;
 	paneContent: string;
 }
@@ -39,7 +39,7 @@ export interface SettledEvent {
 	verification?: ExecutionVerificationEvidence;
 }
 
-interface SessionMonitorOptions {
+interface AgentMonitorOptions {
 	stateDetector: StateDetector;
 	bridge: TmuxBridge;
 	signalRouter: SignalRouter;
@@ -47,7 +47,7 @@ interface SessionMonitorOptions {
 	onSettled?: (event: SettledEvent) => void;
 }
 
-export class SessionMonitor {
+export class AgentMonitor {
 	private stateDetector: StateDetector;
 	private bridge: TmuxBridge;
 	private signalRouter: SignalRouter;
@@ -58,7 +58,7 @@ export class SessionMonitor {
 	private paneTargets = new Map<string, string>();
 	private taskCounter = 0;
 
-	constructor(opts: SessionMonitorOptions) {
+	constructor(opts: AgentMonitorOptions) {
 		this.stateDetector = opts.stateDetector;
 		this.bridge = opts.bridge;
 		this.signalRouter = opts.signalRouter;
@@ -67,18 +67,18 @@ export class SessionMonitor {
 	}
 
 	dispatch(
-		sessionId: string,
+		agentId: string,
 		paneTarget: string,
 		opts: { preHash: string; summary: string; taskContext?: string },
 	): DispatchResult {
-		const existing = this.tasks.get(sessionId);
+		const existing = this.tasks.get(agentId);
 		if (existing) {
 			return {
 				dispatched: false,
 				busy: {
-					sessionId,
+					agentId,
 					currentTask: existing,
-					paneContent: "(session busy)",
+					paneContent: "(agent busy)",
 				},
 			};
 		}
@@ -89,7 +89,7 @@ export class SessionMonitor {
 
 		const task: TaskInfo = {
 			taskId,
-			sessionId,
+			agentId,
 			status: "running",
 			summary: opts.summary,
 			taskContext,
@@ -98,24 +98,24 @@ export class SessionMonitor {
 			abortController: new AbortController(),
 		};
 
-		this.tasks.set(sessionId, task);
-		this.paneTargets.set(sessionId, paneTarget);
+		this.tasks.set(agentId, task);
+		this.paneTargets.set(agentId, paneTarget);
 
 		this.signalRouter.notifyPromptSent(taskContext);
 
 		// Fire-and-forget background polling
-		this.startPolling(sessionId, paneTarget, task);
+		this.startPolling(agentId, paneTarget, task);
 
 		return { dispatched: true, task };
 	}
 
-	resumeTask(sessionId: string, newPreHash: string): boolean {
-		const task = this.tasks.get(sessionId);
+	resumeTask(agentId: string, newPreHash: string): boolean {
+		const task = this.tasks.get(agentId);
 		if (!task || task.status !== "waiting_input") {
 			return false;
 		}
 
-		const paneTarget = this.paneTargets.get(sessionId);
+		const paneTarget = this.paneTargets.get(agentId);
 		if (!paneTarget) {
 			return false;
 		}
@@ -124,41 +124,41 @@ export class SessionMonitor {
 		task.status = "running";
 
 		// Restart polling
-		this.startPolling(sessionId, paneTarget, task);
+		this.startPolling(agentId, paneTarget, task);
 
 		return true;
 	}
 
-	isBusy(sessionId: string): boolean {
-		return this.tasks.has(sessionId);
+	isBusy(agentId: string): boolean {
+		return this.tasks.has(agentId);
 	}
 
-	getTask(sessionId: string): TaskInfo | null {
-		return this.tasks.get(sessionId) ?? null;
+	getTask(agentId: string): TaskInfo | null {
+		return this.tasks.get(agentId) ?? null;
 	}
 
 	getAllTasks(): TaskInfo[] {
 		return Array.from(this.tasks.values());
 	}
 
-	cleanup(sessionId: string): void {
-		const task = this.tasks.get(sessionId);
+	cleanup(agentId: string): void {
+		const task = this.tasks.get(agentId);
 		if (task) {
 			task.abortController.abort();
-			this.tasks.delete(sessionId);
-			this.paneTargets.delete(sessionId);
+			this.tasks.delete(agentId);
+			this.paneTargets.delete(agentId);
 		}
 	}
 
 	shutdown(): void {
-		for (const [_sessionId, task] of this.tasks) {
+		for (const [_agentId, task] of this.tasks) {
 			task.abortController.abort();
 		}
 		this.tasks.clear();
 		this.paneTargets.clear();
 	}
 
-	private startPolling(sessionId: string, paneTarget: string, task: TaskInfo): void {
+	private startPolling(agentId: string, paneTarget: string, task: TaskInfo): void {
 		const poll = async () => {
 			try {
 				const result = await this.stateDetector.waitForSettled(paneTarget, task.taskContext, {
@@ -170,8 +170,8 @@ export class SessionMonitor {
 				if (task.abortController.signal.aborted) {
 					const duration = Math.round((Date.now() - task.startedAt) / 1000);
 					this.fireCallback(task, "aborted", "Task was aborted", duration);
-					this.tasks.delete(sessionId);
-					this.paneTargets.delete(sessionId);
+					this.tasks.delete(agentId);
+					this.paneTargets.delete(agentId);
 					return;
 				}
 
@@ -189,28 +189,28 @@ export class SessionMonitor {
 				if (result.timedOut) {
 					this.fireCallback(task, "timeout", result.analysis.detail, duration, paneContent);
 					this.fireSettledEvent(task, result.content);
-					this.tasks.delete(sessionId);
-					this.paneTargets.delete(sessionId);
+					this.tasks.delete(agentId);
+					this.paneTargets.delete(agentId);
 					return;
 				}
 
 				// Terminal states: completed, error, or anything else
 				this.fireCallback(task, status, result.analysis.detail, duration, paneContent);
 				this.fireSettledEvent(task, result.content);
-				this.tasks.delete(sessionId);
-				this.paneTargets.delete(sessionId);
+				this.tasks.delete(agentId);
+				this.paneTargets.delete(agentId);
 			} catch (err: any) {
 				const duration = Math.round((Date.now() - task.startedAt) / 1000);
 				const paneContent = await this.capturePaneContent(paneTarget);
 				this.fireCallback(task, "error", `Exception: ${err.message}`, duration, paneContent);
-				this.tasks.delete(sessionId);
-				this.paneTargets.delete(sessionId);
+				this.tasks.delete(agentId);
+				this.paneTargets.delete(agentId);
 			}
 		};
 
 		// Fire-and-forget
 		poll().catch((err) => {
-			logger.error("session-monitor", `Unexpected polling error for ${sessionId}: ${err.message}`);
+			logger.error("agent-monitor", `Unexpected polling error for ${agentId}: ${err.message}`);
 		});
 	}
 
@@ -221,10 +221,10 @@ export class SessionMonitor {
 		durationSeconds: number,
 		paneContent?: string,
 	): void {
-		logger.info("session-monitor", `Task ${task.taskId} settled: ${status} (${durationSeconds}s)`);
+		logger.info("agent-monitor", `Task ${task.taskId} settled: ${status} (${durationSeconds}s)`);
 
 		this.workQueue.enqueueAgentEvent({
-			sessionId: task.sessionId,
+			agentId: task.agentId,
 			taskId: task.taskId,
 			status: status as "waiting_input" | "completed" | "error" | "timeout" | "aborted",
 			detail,

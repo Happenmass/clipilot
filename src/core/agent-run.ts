@@ -1,15 +1,15 @@
 import { randomUUID } from "node:crypto";
 import { mkdir, readFile, writeFile } from "node:fs/promises";
 import { join } from "node:path";
-import { getSessionsDir } from "../utils/config.js";
+import { getAgentRunsDir } from "../utils/config.js";
 import type { LogEntry } from "../utils/logger.js";
 
-export type SessionStatus = "executing" | "paused" | "completed" | "failed" | "aborted";
+export type AgentRunStatus = "executing" | "paused" | "completed" | "failed" | "aborted";
 
-export interface SessionData {
+export interface AgentRunData {
 	id: string;
 	goal: string;
-	status: SessionStatus;
+	status: AgentRunStatus;
 	agentType: string;
 	summary?: string;
 	logs: LogEntry[];
@@ -18,10 +18,10 @@ export interface SessionData {
 	completedAt?: number;
 }
 
-export class Session {
+export class AgentRun {
 	id: string;
 	goal: string;
-	status: SessionStatus;
+	status: AgentRunStatus;
 	agentType: string;
 	summary?: string;
 	logs: LogEntry[] = [];
@@ -43,7 +43,7 @@ export class Session {
 		this.updatedAt = Date.now();
 	}
 
-	setStatus(status: SessionStatus): void {
+	setStatus(status: AgentRunStatus): void {
 		this.status = status;
 		this.updatedAt = Date.now();
 		if (status === "completed" || status === "failed" || status === "aborted") {
@@ -52,12 +52,12 @@ export class Session {
 	}
 
 	async save(): Promise<string> {
-		const sessionsDir = await getSessionsDir();
-		const sessionDir = join(sessionsDir, this.id);
-		await mkdir(sessionDir, { recursive: true });
+		const agentRunsDir = await getAgentRunsDir();
+		const agentRunDir = join(agentRunsDir, this.id);
+		await mkdir(agentRunDir, { recursive: true });
 
-		const filePath = join(sessionDir, "state.json");
-		const data: SessionData = {
+		const filePath = join(agentRunDir, "state.json");
+		const data: AgentRunData = {
 			id: this.id,
 			goal: this.goal,
 			status: this.status,
@@ -73,21 +73,21 @@ export class Session {
 		return filePath;
 	}
 
-	static async load(sessionId: string): Promise<Session> {
-		const sessionsDir = await getSessionsDir();
-		const filePath = join(sessionsDir, sessionId, "state.json");
+	static async load(runId: string): Promise<AgentRun> {
+		const agentRunsDir = await getAgentRunsDir();
+		const filePath = join(agentRunsDir, runId, "state.json");
 		const raw = await readFile(filePath, "utf-8");
-		const data: SessionData = JSON.parse(raw);
+		const data: AgentRunData = JSON.parse(raw);
 
-		const session = new Session(data.goal, data.agentType);
-		session.id = data.id;
-		session.status = data.status;
-		session.summary = data.summary;
-		session.logs = data.logs;
-		session.startedAt = data.startedAt;
-		session.updatedAt = data.updatedAt;
-		session.completedAt = data.completedAt;
+		const agentRun = new AgentRun(data.goal, data.agentType);
+		agentRun.id = data.id;
+		agentRun.status = data.status;
+		agentRun.summary = data.summary;
+		agentRun.logs = data.logs;
+		agentRun.startedAt = data.startedAt;
+		agentRun.updatedAt = data.updatedAt;
+		agentRun.completedAt = data.completedAt;
 
-		return session;
+		return agentRun;
 	}
 }

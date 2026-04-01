@@ -113,42 +113,42 @@ export async function startServer(opts: ServerOptions): Promise<ServerInstance> 
 		res.json(uiEventStore.listRecent(limit));
 	});
 
-	// ─── Session terminal snapshot helper ───────────────
+	// ─── Agent terminal snapshot helper ────────────────
 	const DEFAULT_TERMINAL_LINES = 100;
 	const TERMINAL_LINES_INCREMENT = 50;
-	/** Per-session requested line count (default 100, grows by 50 on each "terminal_more") */
-	const sessionTerminalLines = new Map<string, number>();
+	/** Per-agent requested line count (default 100, grows by 50 on each "terminal_more") */
+	const agentTerminalLines = new Map<string, number>();
 
-	function getTerminalLines(sessionId: string): number {
-		return sessionTerminalLines.get(sessionId) ?? DEFAULT_TERMINAL_LINES;
+	function getTerminalLines(agentId: string): number {
+		return agentTerminalLines.get(agentId) ?? DEFAULT_TERMINAL_LINES;
 	}
 
-	function expandTerminalLines(sessionId: string): void {
-		const current = getTerminalLines(sessionId);
-		sessionTerminalLines.set(sessionId, current + TERMINAL_LINES_INCREMENT);
+	function expandTerminalLines(agentId: string): void {
+		const current = getTerminalLines(agentId);
+		agentTerminalLines.set(agentId, current + TERMINAL_LINES_INCREMENT);
 	}
 
-	async function collectSessionTerminals() {
-		const activeSessions = mainAgent.getActiveSessions();
-		const activeIds = new Set(activeSessions.map((s) => s.sessionId));
+	async function collectAgentTerminals() {
+		const activeAgents = mainAgent.getActiveAgents();
+		const activeIds = new Set(activeAgents.map((a) => a.agentId));
 
-		// Clean up entries for sessions that no longer exist
-		for (const id of sessionTerminalLines.keys()) {
-			if (!activeIds.has(id)) sessionTerminalLines.delete(id);
+		// Clean up entries for agents that no longer exist
+		for (const id of agentTerminalLines.keys()) {
+			if (!activeIds.has(id)) agentTerminalLines.delete(id);
 		}
 
-		const sessions: Array<{
-			sessionName: string;
-			sessionId: string;
+		const agents: Array<{
+			agentName: string;
+			agentId: string;
 			status: string;
 			paneContent: string;
 			takenOver: boolean;
 		}> = [];
-		for (const s of activeSessions) {
+		for (const a of activeAgents) {
 			let paneContent = "";
 			try {
-				const lines = getTerminalLines(s.sessionId);
-				const capture = await bridge.capturePane(s.paneTarget, {
+				const lines = getTerminalLines(a.agentId);
+				const capture = await bridge.capturePane(a.paneTarget, {
 					escapeSequences: true,
 					startLine: -lines,
 				});
@@ -156,21 +156,21 @@ export async function startServer(opts: ServerOptions): Promise<ServerInstance> 
 			} catch {
 				// tmux pane may have been destroyed — return empty content
 			}
-			sessions.push({
-				sessionName: s.sessionName,
-				sessionId: s.sessionId,
-				status: s.status,
+			agents.push({
+				agentName: a.agentName,
+				agentId: a.agentId,
+				status: a.status,
 				paneContent,
-				takenOver: s.takenOver,
+				takenOver: a.takenOver,
 			});
 		}
-		return sessions;
+		return agents;
 	}
 
-	function broadcastSessionTerminals() {
-		collectSessionTerminals()
-			.then((sessions) => {
-				broadcaster.broadcast({ type: "session_terminals", sessions });
+	function broadcastAgentTerminals() {
+		collectAgentTerminals()
+			.then((agents) => {
+				broadcaster.broadcast({ type: "agent_terminals", agents });
 			})
 			.catch((err) => {
 				logger.warn("server", `Terminal broadcast failed: ${err.message}`);
@@ -178,28 +178,28 @@ export async function startServer(opts: ServerOptions): Promise<ServerInstance> 
 	}
 
 	// ─── Terminal broadcast timer ───────────────────────
-	let lastBroadcastSessionCount = 0;
+	let lastBroadcastAgentCount = 0;
 	const terminalBroadcastInterval = setInterval(() => {
 		if (broadcaster.getClientCount() === 0) return;
-		const activeSessions = mainAgent.getActiveSessions();
-		if (activeSessions.length === 0 && lastBroadcastSessionCount === 0) return;
-		lastBroadcastSessionCount = activeSessions.length;
-		broadcastSessionTerminals();
+		const activeAgents = mainAgent.getActiveAgents();
+		if (activeAgents.length === 0 && lastBroadcastAgentCount === 0) return;
+		lastBroadcastAgentCount = activeAgents.length;
+		broadcastAgentTerminals();
 	}, 1000);
 
-	// Register session change callback for immediate broadcast
-	mainAgent.setOnSessionChange(() => {
+	// Register agent change callback for immediate broadcast
+	mainAgent.setOnAgentChange(() => {
 		if (broadcaster.getClientCount() === 0) return;
-		lastBroadcastSessionCount = mainAgent.getActiveSessions().length;
-		broadcastSessionTerminals();
+		lastBroadcastAgentCount = mainAgent.getActiveAgents().length;
+		broadcastAgentTerminals();
 	});
 
-	app.get("/api/sessions/terminals", async (_req, res) => {
+	app.get("/api/agents/terminals", async (_req, res) => {
 		try {
-			const sessions = await collectSessionTerminals();
-			res.json(sessions);
+			const agents = await collectAgentTerminals();
+			res.json(agents);
 		} catch (err: any) {
-			logger.error("server", `Failed to collect session terminals: ${err.message}`);
+			logger.error("server", `Failed to collect agent terminals: ${err.message}`);
 			res.json([]);
 		}
 	});

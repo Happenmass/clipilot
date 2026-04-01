@@ -21,7 +21,7 @@ import { loadPersistentMemory } from "./memory/persistent.js";
 import { MemoryStore } from "./memory/store.js";
 import { syncMemoryFiles } from "./memory/sync.js";
 import { ConversationStore } from "./persistence/conversation-store.js";
-import { SessionStore } from "./persistence/session-store.js";
+import { AgentStore } from "./persistence/agent-store.js";
 import { ChatBroadcaster } from "./server/chat-broadcaster.js";
 import { CommandRegistry } from "./server/command-registry.js";
 import { ExecutionEventStore } from "./server/execution-events.js";
@@ -198,7 +198,7 @@ async function triggerTmuxEscapeCascade(opts?: { repeats?: number; intervalMs?: 
 		return;
 	}
 
-	const sessions = await bridge.listCliclawSessions();
+	const sessions = await bridge.listCliclawAgents();
 	for (const session of sessions) {
 		let panes = [];
 		try {
@@ -762,9 +762,9 @@ async function main(): Promise<void> {
 	// Setup agent adapter
 	const defaultAdapter = createAdapter(agentName);
 
-	// Initialize ConversationStore and SessionStore (reuse global DB)
+	// Initialize ConversationStore and AgentStore (reuse global DB)
 	const conversationStore = new ConversationStore(memoryStore.getDb());
-	const sessionStore = new SessionStore(memoryStore.getDb());
+	const agentStore = new AgentStore(memoryStore.getDb());
 
 	// Initialize ChatBroadcaster
 	const broadcaster = new ChatBroadcaster();
@@ -790,7 +790,7 @@ async function main(): Promise<void> {
 	if (existingMessageCount > 0) {
 		restoredMessageCount = contextManager.restore(conversationStore);
 		logger.info("main", `Restored ${restoredMessageCount} messages from SQLite`);
-		console.log(chalk.dim(`Restored ${restoredMessageCount} messages from previous session`));
+		console.log(chalk.dim(`Restored ${restoredMessageCount} messages from previous conversation`));
 	}
 
 	// Initialize Skill System: discover → filter → inject → registry
@@ -854,7 +854,7 @@ async function main(): Promise<void> {
 		syncMemory,
 		embeddingProvider,
 		skillRegistry,
-		sessionStore,
+		agentStore,
 		globalDir,
 		workspaceDir: args.cwd,
 		debug: config.debug,
@@ -868,25 +868,25 @@ async function main(): Promise<void> {
 		},
 	});
 
-	mainAgent.setupSessionMonitor();
+	mainAgent.setupAgentMonitor();
 
-	// Restore persisted sessions (verify tmux is still alive, discard dead ones)
-	const persistedSessions = sessionStore.loadSessions();
-	if (persistedSessions.length > 0) {
+	// Restore persisted agents (verify tmux is still alive, discard dead ones)
+	const persistedAgents = agentStore.loadAgents();
+	if (persistedAgents.length > 0) {
 		let restoredCount = 0;
-		for (const s of persistedSessions) {
-			const alive = await bridge.hasSession(s.sessionId);
+		for (const a of persistedAgents) {
+			const alive = await bridge.hasSession(a.agentId);
 			if (alive) {
-				mainAgent.restoreSession(s.sessionId, { paneTarget: s.paneTarget, workingDir: s.workingDir }, s.takenOver);
+				mainAgent.restoreAgent(a.agentId, { paneTarget: a.paneTarget, workingDir: a.workingDir }, a.takenOver);
 				restoredCount++;
 			} else {
-				sessionStore.deleteSession(s.sessionId);
-				logger.info("main", `Discarded dead session: ${s.sessionId}`);
+				agentStore.deleteAgent(a.agentId);
+				logger.info("main", `Discarded dead agent: ${a.agentId}`);
 			}
 		}
 		if (restoredCount > 0) {
-			logger.info("main", `Restored ${restoredCount} agent session(s)`);
-			console.log(chalk.dim(`Restored ${restoredCount} agent session(s) from previous run`));
+			logger.info("main", `Restored ${restoredCount} agent(s)`);
+			console.log(chalk.dim(`Restored ${restoredCount} agent(s) from previous run`));
 		}
 	}
 

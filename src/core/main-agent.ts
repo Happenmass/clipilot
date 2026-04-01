@@ -13,7 +13,7 @@ import { loadPersistentMemory, readPersistentMemory, updatePersistentMemory } fr
 import { searchMemory } from "../memory/search.js";
 import type { MemoryStore } from "../memory/store.js";
 import type { EmbeddingProvider, HybridSearchConfig, MemoryCategory } from "../memory/types.js";
-import type { SessionStore } from "../persistence/session-store.js";
+import type { AgentStore } from "../persistence/agent-store.js";
 import type { ChatBroadcaster } from "../server/chat-broadcaster.js";
 import type {
 	ExecutionEvent,
@@ -29,8 +29,8 @@ import type { TmuxBridge } from "../tmux/bridge.js";
 import type { StateDetector } from "../tmux/state-detector.js";
 import { logger } from "../utils/logger.js";
 import type { ContextManager } from "./context-manager.js";
-import type { SettledEvent } from "./session-monitor.js";
-import { SessionMonitor } from "./session-monitor.js";
+import type { SettledEvent } from "./agent-monitor.js";
+import { AgentMonitor } from "./agent-monitor.js";
 import type { Signal, SignalRouter } from "./signal-router.js";
 import { type AgentEvent, WorkQueue } from "./work-queue.js";
 
@@ -38,7 +38,7 @@ import { type AgentEvent, WorkQueue } from "./work-queue.js";
 
 export type AgentState = "idle" | "executing";
 
-export interface SessionEntry {
+export interface AgentEntry {
 	paneTarget: string;
 	workingDir: string;
 }
@@ -56,7 +56,7 @@ const TOOL_DEFINITIONS: ToolDefinition[] = [
 	{
 		name: "send_to_agent",
 		description:
-			"Send an instruction prompt to the coding agent. Returns immediately with a task_id. The agent executes asynchronously — you will receive a callback message when the agent finishes, encounters an error, or needs input. If the target session is busy, returns the current task info and recent agent logs instead. If session_id is omitted, routes to the most recently used session.",
+			"Send an instruction prompt to the coding agent. Returns immediately with a task_id. The agent executes asynchronously — you will receive a callback message when the agent finishes, encounters an error, or needs input. If the target agent is busy, returns the current task info and recent agent logs instead. If agent_id is omitted, routes to the most recently used agent.",
 		parameters: {
 			type: "object",
 			properties: {
@@ -66,9 +66,9 @@ const TOOL_DEFINITIONS: ToolDefinition[] = [
 					description:
 						"A brief human-readable summary of the current action for the chat interface (e.g., 'Asking agent to add JWT auth to auth/login.ts')",
 				},
-				session_id: {
+				agent_id: {
 					type: "string",
-					description: "Target session name. If omitted, routes to the active session.",
+					description: "Target agent name. If omitted, routes to the active agent.",
 				},
 			},
 			required: ["prompt", "summary"],
@@ -77,7 +77,7 @@ const TOOL_DEFINITIONS: ToolDefinition[] = [
 	{
 		name: "respond_to_agent",
 		description:
-			"Respond to an agent waiting for input. Only callable when the session has an active task in waiting_input status. Returns immediately — you will receive a callback when the agent settles again. Formats: 'Enter', 'Escape', 'y', 'n', 'arrow:down:N', 'keys:K1,K2,...', or plain text (including menu option numbers like '2'). If session_id is omitted, routes to the most recently used session.",
+			"Respond to an agent waiting for input. Only callable when the agent has an active task in waiting_input status. Returns immediately — you will receive a callback when the agent settles again. Formats: 'Enter', 'Escape', 'y', 'n', 'arrow:down:N', 'keys:K1,K2,...', or plain text (including menu option numbers like '2'). If agent_id is omitted, routes to the most recently used agent.",
 		parameters: {
 			type: "object",
 			properties: {
@@ -87,25 +87,25 @@ const TOOL_DEFINITIONS: ToolDefinition[] = [
 					description:
 						"A brief human-readable summary of this response for the chat interface (e.g., 'Confirming dependency installation')",
 				},
-				session_id: {
+				agent_id: {
 					type: "string",
-					description: "Target session name. If omitted, routes to the active session.",
+					description: "Target agent name. If omitted, routes to the active agent.",
 				},
 			},
 			required: ["value", "summary"],
 		},
 	},
 	{
-		name: "inspect_session",
+		name: "inspect_agent",
 		description:
-			"Inspect a session's current pane content and task status. Can be used at any time — during agent execution, while waiting, or after completion. Useful for checking progress, understanding what an agent is doing, or getting more context beyond what a callback provided. If session_id is omitted, routes to the most recently used session.",
+			"Inspect an agent's current pane content and task status. Can be used at any time — during agent execution, while waiting, or after completion. Useful for checking progress, understanding what an agent is doing, or getting more context beyond what a callback provided. If agent_id is omitted, routes to the most recently used agent.",
 		parameters: {
 			type: "object",
 			properties: {
 				lines: { type: "number", description: "Number of lines to capture (e.g. 100, 200, 500)" },
-				session_id: {
+				agent_id: {
 					type: "string",
-					description: "Target session name. If omitted, routes to the active session.",
+					description: "Target agent name. If omitted, routes to the active agent.",
 				},
 			},
 			required: ["lines"],
@@ -205,53 +205,53 @@ const TOOL_DEFINITIONS: ToolDefinition[] = [
 		},
 	},
 	{
-		name: "create_session",
+		name: "create_agent",
 		description:
-			'Create a tmux session with the "cliclaw-" prefix and launch the coding agent in it. Must be called before send_to_agent/respond_to_agent/inspect_session. On naming conflict, returns an error so you can retry with a different name.\n\nIMPORTANT: If the user provides a session id to resume (or one was found in memory), you MUST pass it as resume_session_id. Omitting it will lose the agent\'s prior conversation context.',
+			'Create a tmux session with the "cliclaw-" prefix and launch the coding agent in it. Must be called before send_to_agent/respond_to_agent/inspect_agent. On naming conflict, returns an error so you can retry with a different name.\n\nIMPORTANT: If the user provides a resume id (or one was found in memory), you MUST pass it as resume_id. Omitting it will lose the agent\'s prior conversation context.',
 		parameters: {
 			type: "object",
 			properties: {
-				session_name: {
+				agent_name: {
 					type: "string",
 					description:
-						'Session name (will be prefixed with "cliclaw-" if not already). If omitted, auto-generated.',
+						'Agent name (will be prefixed with "cliclaw-" if not already). If omitted, auto-generated.',
 				},
 				working_dir: {
 					type: "string",
 					description: "Working directory for the agent. Defaults to process.cwd() if omitted.",
 				},
-				resume_session_id: {
+				resume_id: {
 					type: "string",
 					description:
-						"Claude Code session id to resume. REQUIRED when the user supplies a session id or one was retrieved from memory. When provided, launches with --resume to restore the agent's prior conversation. When omitted, a blank session starts and all previous context is lost.",
+						"Resume id for restoring a previous agent conversation. REQUIRED when the user supplies a resume id or one was retrieved from memory. When provided, launches with --resume to restore the agent's prior conversation. When omitted, a fresh agent starts and all previous context is lost.",
 				},
 			},
 		},
 	},
 	{
-		name: "list_cliclaw_sessions",
+		name: "list_agents",
 		description:
-			"List all tmux sessions with the cliclaw- prefix. Useful for checking existing sessions before creating a new one.",
+			"List all active coding agents (cliclaw- prefixed tmux sessions). Useful for checking existing agents before creating a new one.",
 		parameters: {
 			type: "object",
 			properties: {},
 		},
 	},
 	{
-		name: "kill_session",
+		name: "kill_agent",
 		description:
-			'Gracefully exit a coding agent and destroy its tmux session. Returns captured output and a session id (if available) for resuming later with --resume. If session_id is omitted, targets the active session. Set session_id to "all" to kill all cliclaw sessions.',
+			'Gracefully exit a coding agent and destroy its tmux session. Returns captured output and a resume id (if available) for resuming later with --resume. If agent_id is omitted, targets the active agent. Set agent_id to "all" to kill all agents.',
 		parameters: {
 			type: "object",
 			properties: {
-				session_id: {
+				agent_id: {
 					type: "string",
 					description:
-						'Target session name (e.g. "cliclaw-chat-1"). Omit to target the active session. Set to "all" to kill all cliclaw sessions.',
+						'Target agent name (e.g. "cliclaw-chat-1"). Omit to target the active agent. Set to "all" to kill all agents.',
 				},
 				summary: {
 					type: "string",
-					description: "A brief human-readable summary (e.g., 'Cleaning up session after task complete')",
+					description: "A brief human-readable summary (e.g., 'Cleaning up agent after task complete')",
 				},
 			},
 			required: ["summary"],
@@ -309,7 +309,7 @@ const TOOL_DEFINITIONS: ToolDefinition[] = [
 				cwd: {
 					type: "string",
 					description:
-						"Working directory for execution. Defaults to session working directory if a session exists, otherwise process.cwd().",
+						"Working directory for execution. Defaults to agent working directory if an agent exists, otherwise process.cwd().",
 				},
 				timeout: {
 					type: "number",
@@ -345,9 +345,9 @@ export class MainAgent extends EventEmitter<MainAgentEvents> {
 	private uiEventStore: UiEventStore | null = null;
 	private workQueue = new WorkQueue();
 	private isDispatching = false;
-	private sessions: Map<string, SessionEntry> = new Map();
-	private activeSessionId: string | null = null;
-	private takenOverSessions = new Set<string>();
+	private agents: Map<string, AgentEntry> = new Map();
+	private activeAgentId: string | null = null;
+	private takenOverAgents = new Set<string>();
 	private memoryStore: MemoryStore | null = null;
 	private syncMemory: (() => Promise<void>) | null = null;
 	private embeddingProvider: EmbeddingProvider | null = null;
@@ -355,8 +355,8 @@ export class MainAgent extends EventEmitter<MainAgentEvents> {
 	private debug: boolean;
 	private firstLLMCall = true;
 	private execCommandBroadcastCount = 0;
-	private sessionMonitor: SessionMonitor | null = null;
-	private sessionStore: SessionStore | null = null;
+	private agentMonitor: AgentMonitor | null = null;
+	private agentStore: AgentStore | null = null;
 	private globalDir: string;
 	private workspaceDir: string;
 	private searchConfig: HybridSearchConfig = {
@@ -385,7 +385,7 @@ export class MainAgent extends EventEmitter<MainAgentEvents> {
 		embeddingProvider?: EmbeddingProvider | null;
 		searchConfig?: Partial<HybridSearchConfig>;
 		skillRegistry?: SkillRegistry;
-		sessionStore?: SessionStore;
+		agentStore?: AgentStore;
 		globalDir?: string;
 		workspaceDir?: string;
 		debug?: boolean;
@@ -404,7 +404,7 @@ export class MainAgent extends EventEmitter<MainAgentEvents> {
 		this.syncMemory = opts.syncMemory ?? null;
 		this.embeddingProvider = opts.embeddingProvider ?? null;
 		this.skillRegistry = opts.skillRegistry ?? null;
-		this.sessionStore = opts.sessionStore ?? null;
+		this.agentStore = opts.agentStore ?? null;
 		this.globalDir = opts.globalDir ?? "";
 		this.workspaceDir = opts.workspaceDir ?? "";
 		this.debug = opts.debug ?? false;
@@ -418,30 +418,30 @@ export class MainAgent extends EventEmitter<MainAgentEvents> {
 		this.skillRegistry = registry;
 	}
 
-	private onSessionChange: (() => void) | null = null;
+	private onAgentChange: (() => void) | null = null;
 
-	/** Register a callback invoked whenever sessions are created/exited/killed. */
-	setOnSessionChange(cb: () => void): void {
-		this.onSessionChange = cb;
+	/** Register a callback invoked whenever agents are created/exited/killed. */
+	setOnAgentChange(cb: () => void): void {
+		this.onAgentChange = cb;
 	}
 
-	/** Return all active sessions with their current status. */
-	getActiveSessions(): Array<{
-		sessionName: string;
-		sessionId: string;
+	/** Return all active agents with their current status. */
+	getActiveAgents(): Array<{
+		agentName: string;
+		agentId: string;
 		paneTarget: string;
 		status: string;
 		takenOver: boolean;
 	}> {
 		const result: Array<{
-			sessionName: string;
-			sessionId: string;
+			agentName: string;
+			agentId: string;
 			paneTarget: string;
 			status: string;
 			takenOver: boolean;
 		}> = [];
-		for (const [id, entry] of this.sessions) {
-			const task = this.sessionMonitor?.getTask(id);
+		for (const [id, entry] of this.agents) {
+			const task = this.agentMonitor?.getTask(id);
 			let status: string;
 			if (task?.status === "running") {
 				status = "active";
@@ -451,57 +451,57 @@ export class MainAgent extends EventEmitter<MainAgentEvents> {
 				status = "idle";
 			}
 			result.push({
-				sessionName: id,
-				sessionId: id,
+				agentName: id,
+				agentId: id,
 				paneTarget: entry.paneTarget,
 				status,
-				takenOver: this.takenOverSessions.has(id),
+				takenOver: this.takenOverAgents.has(id),
 			});
 		}
 		return result;
 	}
 
-	/** Mark or unmark a session as human-taken-over. */
-	setTakenOver(sessionId: string, takenOver: boolean): void {
-		if (!this.sessions.has(sessionId)) return;
+	/** Mark or unmark an agent as human-taken-over. */
+	setTakenOver(agentId: string, takenOver: boolean): void {
+		if (!this.agents.has(agentId)) return;
 		if (takenOver) {
-			this.takenOverSessions.add(sessionId);
+			this.takenOverAgents.add(agentId);
 		} else {
-			this.takenOverSessions.delete(sessionId);
+			this.takenOverAgents.delete(agentId);
 		}
-		this.sessionStore?.setTakenOver(sessionId, takenOver);
-		this.onSessionChange?.();
+		this.agentStore?.setTakenOver(agentId, takenOver);
+		this.onAgentChange?.();
 	}
 
-	/** Check if a session is human-taken-over. */
-	isTakenOver(sessionId: string): boolean {
-		return this.takenOverSessions.has(sessionId);
+	/** Check if an agent is human-taken-over. */
+	isTakenOver(agentId: string): boolean {
+		return this.takenOverAgents.has(agentId);
 	}
 
-	/** Get the pane target for a session (used by ws-handler for terminal input). */
-	getSessionPaneTarget(sessionId: string): string | undefined {
-		return this.sessions.get(sessionId)?.paneTarget;
+	/** Get the pane target for an agent (used by ws-handler for terminal input). */
+	getAgentPaneTarget(agentId: string): string | undefined {
+		return this.agents.get(agentId)?.paneTarget;
 	}
 
 	/**
-	 * Restore a persisted session into the in-memory sessions map.
+	 * Restore a persisted agent into the in-memory agents map.
 	 * Called during startup after verifying the tmux session is still alive.
-	 * The most recently restored session becomes the active session.
+	 * The most recently restored agent becomes the active agent.
 	 */
-	restoreSession(sessionId: string, entry: SessionEntry, takenOver = false): void {
-		this.sessions.set(sessionId, entry);
-		this.activeSessionId = sessionId;
+	restoreAgent(agentId: string, entry: AgentEntry, takenOver = false): void {
+		this.agents.set(agentId, entry);
+		this.activeAgentId = agentId;
 		if (takenOver) {
-			this.takenOverSessions.add(sessionId);
+			this.takenOverAgents.add(agentId);
 		}
 		logger.info(
 			"main-agent",
-			`Restored session: ${sessionId}, pane: ${entry.paneTarget}, cwd: ${entry.workingDir}${takenOver ? " (taken over)" : ""}`,
+			`Restored agent: ${agentId}, pane: ${entry.paneTarget}, cwd: ${entry.workingDir}${takenOver ? " (taken over)" : ""}`,
 		);
 	}
 
-	setupSessionMonitor(): void {
-		this.sessionMonitor = new SessionMonitor({
+	setupAgentMonitor(): void {
+		this.agentMonitor = new AgentMonitor({
 			stateDetector: this.stateDetector,
 			bridge: this.bridge,
 			signalRouter: this.signalRouter,
@@ -519,52 +519,52 @@ export class MainAgent extends EventEmitter<MainAgentEvents> {
 	}
 
 	shutdownMonitor(): void {
-		this.sessionMonitor?.shutdown();
+		this.agentMonitor?.shutdown();
 	}
 
-	setPaneTarget(paneTarget: string, sessionId = "_default"): void {
-		this.sessions.set(sessionId, { paneTarget, workingDir: process.cwd() });
-		this.activeSessionId = sessionId;
+	setPaneTarget(paneTarget: string, agentId = "_default"): void {
+		this.agents.set(agentId, { paneTarget, workingDir: process.cwd() });
+		this.activeAgentId = agentId;
 	}
 
 	getPaneTarget(): string | null {
-		if (!this.activeSessionId) return null;
-		return this.sessions.get(this.activeSessionId)?.paneTarget ?? null;
+		if (!this.activeAgentId) return null;
+		return this.agents.get(this.activeAgentId)?.paneTarget ?? null;
 	}
 
-	getSessionWorkingDir(): string {
-		if (!this.activeSessionId) return process.cwd();
-		return this.sessions.get(this.activeSessionId)?.workingDir ?? process.cwd();
+	getAgentWorkingDir(): string {
+		if (!this.activeAgentId) return process.cwd();
+		return this.agents.get(this.activeAgentId)?.workingDir ?? process.cwd();
 	}
 
-	private resolveSession(sessionId?: string): { entry: SessionEntry; id: string } | { error: string } {
-		const id = sessionId ?? this.activeSessionId;
+	private resolveAgent(agentId?: string): { entry: AgentEntry; id: string } | { error: string } {
+		const id = agentId ?? this.activeAgentId;
 		if (!id) {
-			return { error: "No active session. Call create_session first." };
+			return { error: "No active agent. Call create_agent first." };
 		}
-		const entry = this.sessions.get(id);
+		const entry = this.agents.get(id);
 		if (!entry) {
 			return {
-				error: `Session "${id}" not found. Use list_cliclaw_sessions to see available sessions.`,
+				error: `Agent "${id}" not found. Use list_agents to see available agents.`,
 			};
 		}
-		if (this.takenOverSessions.has(id)) {
+		if (this.takenOverAgents.has(id)) {
 			return {
-				error: `Session "${id}" 已被人工接管，无法自动操作。请先在 Web UI 释放该会话。`,
+				error: `Agent "${id}" 已被人工接管，无法自动操作。请先在 Web UI 释放该会话。`,
 			};
 		}
 		return { entry, id };
 	}
 
-	/** Remove a session from all registries. Caller is responsible for onSessionChange(). */
-	private cleanupSession(id: string): void {
-		this.sessionMonitor?.cleanup(id);
-		this.workQueue.removeAgentEventsBySessionId(id);
-		this.sessions.delete(id);
-		this.sessionStore?.deleteSession(id);
-		if (this.activeSessionId === id) {
-			const remaining = [...this.sessions.keys()];
-			this.activeSessionId = remaining.length > 0 ? remaining[remaining.length - 1] : null;
+	/** Remove an agent from all registries. Caller is responsible for onAgentChange(). */
+	private cleanupAgent(id: string): void {
+		this.agentMonitor?.cleanup(id);
+		this.workQueue.removeAgentEventsByAgentId(id);
+		this.agents.delete(id);
+		this.agentStore?.deleteAgent(id);
+		if (this.activeAgentId === id) {
+			const remaining = [...this.agents.keys()];
+			this.activeAgentId = remaining.length > 0 ? remaining[remaining.length - 1] : null;
 		}
 	}
 
@@ -886,7 +886,7 @@ export class MainAgent extends EventEmitter<MainAgentEvents> {
 	private async processAgentEventItem(event: AgentEvent): Promise<void> {
 		// Format event as a structured message for the LLM
 		const lines = [
-			`[AGENT_EVENT session_id=${event.sessionId} task_id=${event.taskId} status=${event.status} duration=${event.durationSeconds}s]`,
+			`[AGENT_EVENT agent_id=${event.agentId} task_id=${event.taskId} status=${event.status} duration=${event.durationSeconds}s]`,
 			`Original task: ${event.summary}`,
 			`Agent status: ${event.status} (${event.detail})`,
 		];
@@ -1144,29 +1144,29 @@ export class MainAgent extends EventEmitter<MainAgentEvents> {
 
 		switch (name) {
 			case "send_to_agent": {
-				const resolved = this.resolveSession(args.session_id as string | undefined);
+				const resolved = this.resolveAgent(args.agent_id as string | undefined);
 				if ("error" in resolved) {
 					return { output: `Error: ${resolved.error}`, terminal: false };
 				}
-				const { entry: sendSession, id: sendSessionId } = resolved;
-				this.activeSessionId = sendSessionId;
+				const { entry: sendAgent, id: sendAgentId } = resolved;
+				this.activeAgentId = sendAgentId;
 
 				const prompt = args.prompt as string;
 				const summary = args.summary as string;
 
-				// Non-blocking: check if session is busy
-				if (this.sessionMonitor?.isBusy(sendSessionId)) {
-					const task = this.sessionMonitor.getTask(sendSessionId)!;
+				// Non-blocking: check if agent is busy
+				if (this.agentMonitor?.isBusy(sendAgentId)) {
+					const task = this.agentMonitor.getTask(sendAgentId)!;
 					const elapsed = Math.round((Date.now() - task.startedAt) / 1000);
 					let paneContent = "";
 					try {
-						const capture = await this.bridge.capturePane(sendSession.paneTarget, { startLine: -100 });
+						const capture = await this.bridge.capturePane(sendAgent.paneTarget, { startLine: -100 });
 						paneContent = capture.content;
 					} catch {
 						paneContent = "(failed to capture pane content)";
 					}
 					return {
-						output: `Session ${sendSessionId} is busy (task_id: ${task.taskId}, running for ${elapsed}s).\nCurrent task: ${task.summary}\nCurrent agent logs:\n${paneContent}`,
+						output: `Agent ${sendAgentId} is busy (task_id: ${task.taskId}, running for ${elapsed}s).\nCurrent task: ${task.summary}\nCurrent agent logs:\n${paneContent}`,
 						terminal: false,
 					};
 				}
@@ -1179,17 +1179,17 @@ export class MainAgent extends EventEmitter<MainAgentEvents> {
 					toolName: name,
 					summary,
 					workspace: {
-						workingDir: sendSession.workingDir,
+						workingDir: sendAgent.workingDir,
 						available: false,
 						changedFiles: [],
 					},
 				});
 
-				const sendPreHash = await this.stateDetector.captureHash(sendSession.paneTarget);
-				await this.adapter.sendPrompt(this.bridge, sendSession.paneTarget, prompt);
+				const sendPreHash = await this.stateDetector.captureHash(sendAgent.paneTarget);
+				await this.adapter.sendPrompt(this.bridge, sendAgent.paneTarget, prompt);
 
-				if (this.sessionMonitor) {
-					const result = this.sessionMonitor.dispatch(sendSessionId, sendSession.paneTarget, {
+				if (this.agentMonitor) {
+					const result = this.agentMonitor.dispatch(sendAgentId, sendAgent.paneTarget, {
 						preHash: sendPreHash,
 						summary,
 						taskContext: prompt,
@@ -1197,42 +1197,42 @@ export class MainAgent extends EventEmitter<MainAgentEvents> {
 
 					if (result.dispatched) {
 						return {
-							output: `Task dispatched. task_id: ${result.task.taskId}, session: ${sendSessionId}.\nYou will receive a callback when the agent finishes.`,
+							output: `Task dispatched. task_id: ${result.task.taskId}, agent: ${sendAgentId}.\nYou will receive a callback when the agent finishes.`,
 							terminal: false,
 						};
 					}
 					return {
-						output: `Session ${sendSessionId} became busy unexpectedly.`,
+						output: `Agent ${sendAgentId} became busy unexpectedly.`,
 						terminal: false,
 					};
 				}
 
-				return { output: "Error: SessionMonitor not initialized", terminal: false };
+				return { output: "Error: AgentMonitor not initialized", terminal: false };
 			}
 
 			case "respond_to_agent": {
-				const resolved = this.resolveSession(args.session_id as string | undefined);
+				const resolved = this.resolveAgent(args.agent_id as string | undefined);
 				if ("error" in resolved) {
 					return { output: `Error: ${resolved.error}`, terminal: false };
 				}
-				const { entry: respondSession, id: respondSessionId } = resolved;
-				this.activeSessionId = respondSessionId;
+				const { entry: respondAgent, id: respondAgentId } = resolved;
+				this.activeAgentId = respondAgentId;
 
 				const value = args.value as string;
 				const summary = args.summary as string;
 
 				// Check task state
-				if (this.sessionMonitor) {
-					const task = this.sessionMonitor.getTask(respondSessionId);
+				if (this.agentMonitor) {
+					const task = this.agentMonitor.getTask(respondAgentId);
 					if (!task) {
 						return {
-							output: `Error: Session ${respondSessionId} has no active task.`,
+							output: `Error: Agent ${respondAgentId} has no active task.`,
 							terminal: false,
 						};
 					}
 					if (task.status !== "waiting_input") {
 						return {
-							output: `Error: Agent in session ${respondSessionId} is not waiting for input (current status: ${task.status}).`,
+							output: `Error: Agent ${respondAgentId} is not waiting for input (current status: ${task.status}).`,
 							terminal: false,
 						};
 					}
@@ -1246,24 +1246,24 @@ export class MainAgent extends EventEmitter<MainAgentEvents> {
 					toolName: name,
 					summary,
 					workspace: {
-						workingDir: respondSession.workingDir,
+						workingDir: respondAgent.workingDir,
 						available: false,
 						changedFiles: [],
 					},
 				});
 
-				await this.adapter.sendResponse(this.bridge, respondSession.paneTarget, value);
+				await this.adapter.sendResponse(this.bridge, respondAgent.paneTarget, value);
 
-				if (this.sessionMonitor) {
+				if (this.agentMonitor) {
 					// Wait for agent to begin processing the response before capturing hash.
 					// Without this delay, captureHash may snapshot the pre-processing state,
 					// causing Phase 1 to never see a hash change (stuck until timeout).
 					await new Promise((resolve) => setTimeout(resolve, 500));
-					const newPreHash = await this.stateDetector.captureHash(respondSession.paneTarget);
-					const resumed = this.sessionMonitor.resumeTask(respondSessionId, newPreHash);
+					const newPreHash = await this.stateDetector.captureHash(respondAgent.paneTarget);
+					const resumed = this.agentMonitor.resumeTask(respondAgentId, newPreHash);
 					if (!resumed) {
 						return {
-							output: `Error: Failed to resume task monitoring for session ${respondSessionId}.`,
+							output: `Error: Failed to resume task monitoring for agent ${respondAgentId}.`,
 							terminal: false,
 						};
 					}
@@ -1273,15 +1273,15 @@ export class MainAgent extends EventEmitter<MainAgentEvents> {
 					};
 				}
 
-				return { output: "Error: SessionMonitor not initialized", terminal: false };
+				return { output: "Error: AgentMonitor not initialized", terminal: false };
 			}
 
-			case "inspect_session": {
-				const resolved = this.resolveSession(args.session_id as string | undefined);
+			case "inspect_agent": {
+				const resolved = this.resolveAgent(args.agent_id as string | undefined);
 				if ("error" in resolved) {
 					return { output: `Error: ${resolved.error}`, terminal: false };
 				}
-				const { id: inspectSessionId } = resolved;
+				const { id: inspectAgentId } = resolved;
 				const lines = args.lines as number;
 
 				let paneContent: string;
@@ -1290,21 +1290,21 @@ export class MainAgent extends EventEmitter<MainAgentEvents> {
 					paneContent = capture.content;
 				} catch (err: any) {
 					return {
-						output: `Error: Failed to capture pane for session ${inspectSessionId}: ${err.message}`,
+						output: `Error: Failed to capture pane for agent ${inspectAgentId}: ${err.message}`,
 						terminal: false,
 					};
 				}
 
 				let statusLabel = "idle";
-				if (this.sessionMonitor) {
-					const task = this.sessionMonitor.getTask(inspectSessionId);
+				if (this.agentMonitor) {
+					const task = this.agentMonitor.getTask(inspectAgentId);
 					if (task) {
 						statusLabel = task.status;
 					}
 				}
 
 				return {
-					output: `[Session ${inspectSessionId}] Status: ${statusLabel}\n${paneContent}`,
+					output: `[Agent ${inspectAgentId}] Status: ${statusLabel}\n${paneContent}`,
 					terminal: false,
 				};
 			}
@@ -1425,7 +1425,7 @@ export class MainAgent extends EventEmitter<MainAgentEvents> {
 						toolName: name,
 						summary: `Wrote ${result.path}`,
 						workspace: {
-							workingDir: this.getSessionWorkingDir(),
+							workingDir: this.getAgentWorkingDir(),
 							available: false,
 							changedFiles: [],
 						},
@@ -1495,13 +1495,16 @@ export class MainAgent extends EventEmitter<MainAgentEvents> {
 				return { output: skill.body, terminal: false };
 			}
 
-			case "create_session": {
-				logger.debug("main-agent", `create_session raw args: ${JSON.stringify(args)}`);
-				let sessionName = args.session_name as string | undefined;
-				if (!sessionName) {
-					sessionName = generateSessionName("chat");
-				} else if (!sessionName.startsWith("cliclaw-")) {
-					sessionName = `cliclaw-${sessionName}`;
+			case "create_agent": {
+				logger.debug("main-agent", `create_agent raw args: ${JSON.stringify(args)}`);
+				const rawName = args.agent_name as string | undefined;
+				let agentName: string;
+				if (!rawName) {
+					agentName = generateAgentName("chat");
+				} else if (!rawName.startsWith("cliclaw-")) {
+					agentName = `cliclaw-${rawName}`;
+				} else {
+					agentName = rawName;
 				}
 
 				const rawWorkingDir = (args.working_dir as string | undefined) ?? process.cwd();
@@ -1511,7 +1514,7 @@ export class MainAgent extends EventEmitter<MainAgentEvents> {
 						? homedir()
 						: rawWorkingDir;
 				if (workingDir !== rawWorkingDir) {
-					logger.debug("main-agent", `create_session expanded working_dir: "${rawWorkingDir}" → "${workingDir}"`);
+					logger.debug("main-agent", `create_agent expanded working_dir: "${rawWorkingDir}" → "${workingDir}"`);
 				}
 
 				try {
@@ -1523,10 +1526,10 @@ export class MainAgent extends EventEmitter<MainAgentEvents> {
 					return { output: `Error: Directory "${workingDir}" does not exist.`, terminal: false };
 				}
 
-				const exists = await this.bridge.hasSession(sessionName);
+				const exists = await this.bridge.hasSession(agentName);
 				if (exists) {
 					return {
-						output: `Error: Session "${sessionName}" already exists. Choose a different name or use list_cliclaw_sessions to see existing sessions.`,
+						output: `Error: Agent "${agentName}" already exists. Choose a different name or use list_agents to see existing agents.`,
 						terminal: false,
 					};
 				}
@@ -1537,85 +1540,85 @@ export class MainAgent extends EventEmitter<MainAgentEvents> {
 						runId,
 						phase: "planned",
 						toolName: name,
-						summary: `Create session ${sessionName}`,
+						summary: `Create agent ${agentName}`,
 						workspace: {
 							workingDir,
 							available: false,
 							changedFiles: [],
 						},
 					});
-					const rawResumeId = args.resume_session_id as string | undefined;
-					const resumeSessionId = rawResumeId?.trim() || undefined;
-					if (resumeSessionId && /\s/.test(resumeSessionId)) {
+					const rawResumeId = args.resume_id as string | undefined;
+					const resumeId = rawResumeId?.trim() || undefined;
+					if (resumeId && /\s/.test(resumeId)) {
 						return {
-							output: `Error: resume_session_id must not contain whitespace: "${resumeSessionId}"`,
+							output: `Error: resume_id must not contain whitespace: "${resumeId}"`,
 							terminal: false,
 						};
 					}
 					const paneTarget = await this.adapter.launch(this.bridge, {
 						workingDir,
-						sessionName,
-						resumeSessionId,
+						sessionName: agentName,
+						resumeId,
 					});
-					this.sessions.set(sessionName, { paneTarget, workingDir });
-					this.sessionStore?.saveSession(sessionName, { paneTarget, workingDir });
-					this.activeSessionId = sessionName;
+					this.agents.set(agentName, { paneTarget, workingDir });
+					this.agentStore?.saveAgent(agentName, { paneTarget, workingDir });
+					this.activeAgentId = agentName;
 					this.stateDetector.setCharacteristics(this.adapter.getCharacteristics());
 					const workspace = await this.collectWorkspaceEvidence(workingDir);
 					this.emitExecutionEvent({
 						runId,
 						phase: "settled",
 						toolName: name,
-						summary: `Session ${sessionName} created`,
+						summary: `Agent ${agentName} created`,
 						workspace,
 						persistence: this.createPersistenceEvidence(),
 					});
-					logger.info("main-agent", `Session created: ${sessionName}, pane: ${paneTarget}, cwd: ${workingDir}`);
-					this.onSessionChange?.();
+					logger.info("main-agent", `Agent created: ${agentName}, pane: ${paneTarget}, cwd: ${workingDir}`);
+					this.onAgentChange?.();
 					return {
-						output: `Session "${sessionName}" created in ${workingDir}. Session ID: "${sessionName}". Agent launched in ${paneTarget}. You can now use send_to_agent.`,
+						output: `Agent "${agentName}" created in ${workingDir}. Agent launched in ${paneTarget}. You can now use send_to_agent.`,
 						terminal: false,
 					};
 				} catch (err: any) {
-					return { output: `Failed to create session: ${err.message}`, terminal: false };
+					return { output: `Failed to create agent: ${err.message}`, terminal: false };
 				}
 			}
 
-			case "list_cliclaw_sessions": {
+			case "list_agents": {
 				try {
-					const sessions = await this.bridge.listCliclawSessions();
-					if (sessions.length === 0) {
-						return { output: "No cliclaw sessions found.", terminal: false };
+					const tmuxSessions = await this.bridge.listCliclawAgents();
+					if (tmuxSessions.length === 0) {
+						return { output: "No active agents found.", terminal: false };
 					}
-					const formatted = sessions
+					const formatted = tmuxSessions
 						.map((s) => `- ${s.name} (windows: ${s.windows}, attached: ${s.attached})`)
 						.join("\n");
-					return { output: `Found ${sessions.length} cliclaw session(s):\n${formatted}`, terminal: false };
+					return { output: `Found ${tmuxSessions.length} agent(s):\n${formatted}`, terminal: false };
 				} catch (err: any) {
-					return { output: `Error listing sessions: ${err.message}`, terminal: false };
+					return { output: `Error listing agents: ${err.message}`, terminal: false };
 				}
 			}
 
-			case "kill_session": {
-				const killSessionId = args.session_id as string | undefined;
+			case "kill_agent": {
+				const killAgentId = args.agent_id as string | undefined;
 				const killSummary = args.summary as string;
 				this.emitUiEvent("agent_update", killSummary);
 
 				try {
-					// ── Kill all sessions ──
-					if (killSessionId === "all") {
-						const tmuxSessions = await this.bridge.listCliclawSessions();
-						if (tmuxSessions.length === 0 && this.sessions.size === 0) {
-							return { output: "No cliclaw sessions to kill.", terminal: false };
+					// ── Kill all agents ──
+					if (killAgentId === "all") {
+						const tmuxSessions = await this.bridge.listCliclawAgents();
+						if (tmuxSessions.length === 0 && this.agents.size === 0) {
+							return { output: "No agents to kill.", terminal: false };
 						}
 
 						// Gracefully exit each registered agent (best-effort)
-						const sessionIds: string[] = [];
-						for (const [id, entry] of this.sessions) {
+						const resumeIds: string[] = [];
+						for (const [id, entry] of this.agents) {
 							try {
 								if (this.adapter.exitAgent) {
 									const result = await this.adapter.exitAgent(this.bridge, entry.paneTarget);
-									if (result.sessionId) sessionIds.push(`${id}: ${result.sessionId}`);
+									if (result.resumeId) resumeIds.push(`${id}: ${result.resumeId}`);
 								}
 							} catch {
 								/* best-effort */
@@ -1633,27 +1636,27 @@ export class MainAgent extends EventEmitter<MainAgentEvents> {
 							}
 						}
 
-						// Cleanup all registered sessions
-						const registeredIds = [...this.sessions.keys()];
+						// Cleanup all registered agents
+						const registeredIds = [...this.agents.keys()];
 						for (const id of registeredIds) {
-							this.cleanupSession(id);
+							this.cleanupAgent(id);
 						}
-						this.activeSessionId = null;
-						this.onSessionChange?.();
+						this.activeAgentId = null;
+						this.onAgentChange?.();
 
-						const parts = [`Killed ${killed.length} session(s): ${killed.join(", ")}`];
-						if (sessionIds.length > 0) {
-							parts.push(`\nSession IDs:\n${sessionIds.join("\n")}`);
+						const parts = [`Killed ${killed.length} agent(s): ${killed.join(", ")}`];
+						if (resumeIds.length > 0) {
+							parts.push(`\nResume IDs:\n${resumeIds.join("\n")}`);
 						}
 						return { output: parts.join("\n"), terminal: false };
 					}
 
-					// ── Kill single session ──
-					const resolved = this.resolveSession(killSessionId);
+					// ── Kill single agent ──
+					const resolved = this.resolveAgent(killAgentId);
 					if ("error" in resolved) {
 						return { output: `Error: ${resolved.error}`, terminal: false };
 					}
-					const { entry: session, id: sessionId } = resolved;
+					const { entry: agentEntry, id: agentId } = resolved;
 
 					const runId = this.createExecutionRunId(name);
 					this.emitExecutionEvent({
@@ -1662,33 +1665,33 @@ export class MainAgent extends EventEmitter<MainAgentEvents> {
 						toolName: name,
 						summary: killSummary,
 						workspace: {
-							workingDir: session.workingDir,
+							workingDir: agentEntry.workingDir,
 							available: false,
 							changedFiles: [],
 						},
 					});
 
-					// Gracefully exit agent to capture session id (best-effort)
+					// Gracefully exit agent to capture resume id (best-effort)
 					let agentContent = "";
-					let resumeSessionId: string | undefined;
+					let resumeId: string | undefined;
 					if (this.adapter.exitAgent) {
 						try {
-							const exitResult = await this.adapter.exitAgent(this.bridge, session.paneTarget);
+							const exitResult = await this.adapter.exitAgent(this.bridge, agentEntry.paneTarget);
 							agentContent = exitResult.content;
-							resumeSessionId = exitResult.sessionId;
+							resumeId = exitResult.resumeId;
 						} catch (err: any) {
 							logger.warn("main-agent", `exitAgent failed (will still kill tmux): ${err.message}`);
 						}
 					}
 
 					// Kill tmux session
-					const exists = await this.bridge.hasSession(sessionId);
+					const exists = await this.bridge.hasSession(agentId);
 					if (exists) {
-						await this.bridge.killSession(sessionId);
+						await this.bridge.killSession(agentId);
 					}
 
 					// Emit evidence
-					const workspace = await this.collectWorkspaceEvidence(session.workingDir);
+					const workspace = await this.collectWorkspaceEvidence(agentEntry.workingDir);
 					const test = this.extractTestEvidence(agentContent);
 					this.emitExecutionEvent({
 						runId,
@@ -1706,30 +1709,30 @@ export class MainAgent extends EventEmitter<MainAgentEvents> {
 						summary: killSummary,
 						workspace,
 						persistence: this.createPersistenceEvidence({
-							sessionResumeId: resumeSessionId,
-							sessionResumable: Boolean(resumeSessionId),
+							agentResumeId: resumeId,
+							agentResumable: Boolean(resumeId),
 						}),
 					});
 
-					// Cleanup session registry
-					this.cleanupSession(sessionId);
-					this.onSessionChange?.();
+					// Cleanup agent registry
+					this.cleanupAgent(agentId);
+					this.onAgentChange?.();
 
-					const parts = [`[Session killed]\n${agentContent}`];
-					if (resumeSessionId) {
-						parts.push(`\nSession ID: ${resumeSessionId}`);
-						parts.push(`Working directory: ${session.workingDir}`);
+					const parts = [`[Agent killed]\n${agentContent}`];
+					if (resumeId) {
+						parts.push(`\nResume ID: ${resumeId}`);
+						parts.push(`Working directory: ${agentEntry.workingDir}`);
 					}
 					return { output: parts.join("\n"), terminal: false };
 				} catch (err: any) {
-					return { output: `Failed to kill session: ${err.message}`, terminal: false };
+					return { output: `Failed to kill agent: ${err.message}`, terminal: false };
 				}
 			}
 
 			case "exec_command": {
 				const command = args.command as string;
 				const execSummary = args.summary as string;
-				const rawCwd = (args.cwd as string | undefined) ?? this.getSessionWorkingDir();
+				const rawCwd = (args.cwd as string | undefined) ?? this.getAgentWorkingDir();
 				const cwd = rawCwd.startsWith("~/")
 					? join(homedir(), rawCwd.slice(2))
 					: rawCwd.startsWith("~")
@@ -1787,7 +1790,7 @@ export class MainAgent extends EventEmitter<MainAgentEvents> {
 			}
 
 			case "list_agent_tasks": {
-				const activeTasks = this.sessionMonitor?.getAllTasks() ?? [];
+				const activeTasks = this.agentMonitor?.getAllTasks() ?? [];
 				const pendingEvents = this.workQueue.getAgentEvents();
 
 				const lines: string[] = [];
@@ -1797,7 +1800,7 @@ export class MainAgent extends EventEmitter<MainAgentEvents> {
 					for (const task of activeTasks) {
 						const elapsedSeconds = Math.round((Date.now() - task.startedAt) / 1000);
 						lines.push(
-							`- session=${task.sessionId} task=${task.taskId} status=${task.status} elapsed=${elapsedSeconds}s`,
+							`- agent=${task.agentId} task=${task.taskId} status=${task.status} elapsed=${elapsedSeconds}s`,
 						);
 						lines.push(`  summary: ${task.summary}`);
 					}
@@ -1808,7 +1811,7 @@ export class MainAgent extends EventEmitter<MainAgentEvents> {
 					lines.push("## Pending Events (WorkQueue)");
 					for (const evt of pendingEvents) {
 						lines.push(
-							`- session=${evt.sessionId} task=${evt.taskId} status=${evt.status} duration=${evt.durationSeconds}s`,
+							`- agent=${evt.agentId} task=${evt.taskId} status=${evt.status} duration=${evt.durationSeconds}s`,
 						);
 						lines.push(`  summary: ${evt.summary}`);
 						lines.push(`  detail: ${evt.detail}`);
@@ -1852,11 +1855,11 @@ export class MainAgent extends EventEmitter<MainAgentEvents> {
 	}
 }
 
-function generateSessionName(prefix: string): string {
+function generateAgentName(prefix: string): string {
 	const slug = prefix
 		.replace(/[^\w\u4e00-\u9fff]+/g, "-")
 		.replace(/^-+|-+$/g, "")
 		.slice(0, 30)
 		.replace(/-$/, "");
-	return `cliclaw-${slug || "session"}`;
+	return `cliclaw-${slug || "agent"}`;
 }

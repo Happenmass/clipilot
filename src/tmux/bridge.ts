@@ -90,7 +90,7 @@ export class TmuxBridge {
 		}
 	}
 
-	async listCliclawSessions(): Promise<TmuxSession[]> {
+	async listCliclawAgents(): Promise<TmuxSession[]> {
 		const all = await this.listSessions();
 		return all.filter((s) => s.name.startsWith("cliclaw-"));
 	}

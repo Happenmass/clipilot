@@ -215,7 +215,7 @@ export async function clearServerRuntimeState(): Promise<void> {
 	}
 }
 
-export async function getSessionsDir(): Promise<string> {
+export async function getAgentRunsDir(): Promise<string> {
 	const dir = join(CONFIG_DIR, "sessions");
 	await mkdir(dir, { recursive: true });
 	return dir;

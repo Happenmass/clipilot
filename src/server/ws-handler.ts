@@ -19,7 +19,7 @@ export function handleWebSocket(
 		broadcaster: ChatBroadcaster;
 		commandRouter: CommandRouter;
 		bridge: TmuxBridge;
-		onTerminalMore?: (sessionId: string) => void;
+		onTerminalMore?: (agentId: string) => void;
 	},
 ): void {
 	const { mainAgent, broadcaster, commandRouter, bridge } = opts;
@@ -79,42 +79,42 @@ export function handleWebSocket(
 			}
 
 			case "takeover": {
-				const sessionId = parsed.sessionId as string;
-				if (!sessionId) {
-					logger.warn("ws-handler", "Takeover missing sessionId");
+				const agentId = parsed.agentId as string;
+				if (!agentId) {
+					logger.warn("ws-handler", "Takeover missing agentId");
 					return;
 				}
-				mainAgent.setTakenOver(sessionId, true);
-				broadcaster.broadcast({ type: "system", message: `会话 ${sessionId} 已被人工接管` });
+				mainAgent.setTakenOver(agentId, true);
+				broadcaster.broadcast({ type: "system", message: `会话 ${agentId} 已被人工接管` });
 				break;
 			}
 
 			case "release": {
-				const sessionId = parsed.sessionId as string;
-				if (!sessionId) {
-					logger.warn("ws-handler", "Release missing sessionId");
+				const agentId = parsed.agentId as string;
+				if (!agentId) {
+					logger.warn("ws-handler", "Release missing agentId");
 					return;
 				}
-				mainAgent.setTakenOver(sessionId, false);
-				broadcaster.broadcast({ type: "system", message: `会话 ${sessionId} 已恢复 MainAgent 控制` });
+				mainAgent.setTakenOver(agentId, false);
+				broadcaster.broadcast({ type: "system", message: `会话 ${agentId} 已恢复 MainAgent 控制` });
 				break;
 			}
 
 			case "terminal_input": {
-				const sessionId = parsed.sessionId as string;
+				const agentId = parsed.agentId as string;
 				const data = (parsed.data as string) ?? "";
 				const inputType = parsed.inputType as string;
-				if (!sessionId || !inputType) {
-					logger.warn("ws-handler", "terminal_input missing sessionId or inputType");
+				if (!agentId || !inputType) {
+					logger.warn("ws-handler", "terminal_input missing agentId or inputType");
 					return;
 				}
-				if (!mainAgent.isTakenOver(sessionId)) {
-					logger.warn("ws-handler", `terminal_input rejected: session ${sessionId} is not taken over`);
+				if (!mainAgent.isTakenOver(agentId)) {
+					logger.warn("ws-handler", `terminal_input rejected: agent ${agentId} is not taken over`);
 					return;
 				}
-				const paneTarget = mainAgent.getSessionPaneTarget(sessionId);
+				const paneTarget = mainAgent.getAgentPaneTarget(agentId);
 				if (!paneTarget) {
-					logger.warn("ws-handler", `terminal_input: session ${sessionId} not found`);
+					logger.warn("ws-handler", `terminal_input: agent ${agentId} not found`);
 					return;
 				}
 				try {
@@ -144,13 +144,13 @@ export function handleWebSocket(
 			}
 
 			case "terminal_more": {
-				const sessionId = parsed.sessionId as string;
-				if (!sessionId) {
-					logger.warn("ws-handler", "terminal_more missing sessionId");
+				const agentId = parsed.agentId as string;
+				if (!agentId) {
+					logger.warn("ws-handler", "terminal_more missing agentId");
 					return;
 				}
 				if (opts.onTerminalMore) {
-					opts.onTerminalMore(sessionId);
+					opts.onTerminalMore(agentId);
 				}
 				break;
 			}

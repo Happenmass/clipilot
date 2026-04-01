@@ -1,7 +1,7 @@
 import { EventEmitter } from "node:events";
 
 export interface AgentEvent {
-	sessionId: string;
+	agentId: string;
 	taskId: string;
 	status: "waiting_input" | "completed" | "error" | "timeout" | "aborted";
 	detail: string;
@@ -51,10 +51,10 @@ export class WorkQueue extends EventEmitter {
 		return this.queue.length;
 	}
 
-	/** Remove all agent_event items matching sessionId. Returns count removed. */
-	removeAgentEventsBySessionId(sessionId: string): number {
+	/** Remove all agent_event items matching agentId. Returns count removed. */
+	removeAgentEventsByAgentId(agentId: string): number {
 		const before = this.queue.length;
-		this.queue = this.queue.filter((item) => !(item.kind === "agent_event" && item.event.sessionId === sessionId));
+		this.queue = this.queue.filter((item) => !(item.kind === "agent_event" && item.event.agentId === agentId));
 		return before - this.queue.length;
 	}
 

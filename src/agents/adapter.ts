@@ -3,8 +3,8 @@ import type { TmuxBridge } from "../tmux/bridge.js";
 export interface ExitAgentResult {
 	/** Captured tmux pane content after exit */
 	content: string;
-	/** Extracted session id for --resume, if available */
-	sessionId?: string;
+	/** Extracted resume id for --resume, if available */
+	resumeId?: string;
 }
 
 export interface LaunchOptions {
@@ -12,8 +12,8 @@ export interface LaunchOptions {
 	sessionName: string;
 	windowName?: string;
 	env?: Record<string, string>;
-	/** Claude Code session id for --resume, obtained from kill_session */
-	resumeSessionId?: string;
+	/** Resume id for --resume, obtained from kill_agent */
+	resumeId?: string;
 }
 
 export interface OpenSpecCommands {

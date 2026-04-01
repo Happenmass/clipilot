@@ -21,8 +21,8 @@ export interface ExecutionWorkspaceEvidence {
 
 export interface ExecutionPersistenceEvidence {
 	memoryWrites: string[];
-	sessionResumeId?: string;
-	sessionResumable?: boolean;
+	agentResumeId?: string;
+	agentResumable?: boolean;
 	conversationPersisted: boolean;
 }
 

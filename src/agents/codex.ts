@@ -29,7 +29,7 @@ export class CodexAdapter implements AgentAdapter {
 		const paneTarget = `${opts.sessionName}:0.0`;
 
 		// Codex uses subcommand style: `codex resume <id>` (not --resume flag)
-		const cmd = opts.resumeSessionId ? `${this.command} resume ${opts.resumeSessionId}` : this.command;
+		const cmd = opts.resumeId ? `${this.command} resume ${opts.resumeId}` : this.command;
 		logger.info("codex", `Launching in ${paneTarget}: ${cmd}`);
 		await bridge.sendText(paneTarget, cmd);
 		await sleep(200);
@@ -157,15 +157,15 @@ export class CodexAdapter implements AgentAdapter {
 		];
 		const content = await pollForExit(bridge, paneTarget, exitPatterns);
 
-		// Extract session id from "codex resume <uuid>" pattern
+		// Extract resume id from "codex resume <uuid>" pattern
 		const match = content.match(/codex\s+resume\s+([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})/);
-		const sessionId = match?.[1];
+		const resumeId = match?.[1];
 
-		if (sessionId) {
-			logger.info("codex", `Extracted session id: ${sessionId}`);
+		if (resumeId) {
+			logger.info("codex", `Extracted resume id: ${resumeId}`);
 		}
 
-		return { content, sessionId };
+		return { content, resumeId };
 	}
 
 	getCharacteristics(): AgentCharacteristics {
