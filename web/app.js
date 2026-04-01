@@ -635,10 +635,16 @@ function handleServerMessage(data) {
 			upsertExecutionCard(data.event);
 			break;
 
-		case "state":
+		case "state": {
+			const prevState = agentState;
 			agentState = data.state;
 			setConnectionStatus("connected");
+			// Notify when task execution finishes (executing → idle)
+			if (prevState === "executing" && data.state === "idle") {
+				notifyTaskComplete();
+			}
 			break;
+		}
 
 		case "system":
 			addMessageBubble("system", data.message);
@@ -676,6 +682,21 @@ function scrollToBottom() {
 	requestAnimationFrame(function () {
 		messagesEl.scrollTop = messagesEl.scrollHeight;
 	});
+}
+
+function notifyTaskComplete() {
+	if (document.hasFocus()) return;
+	if (!("Notification" in window)) return;
+
+	if (Notification.permission === "granted") {
+		new Notification("Cliclaw", { body: "任务执行完成", icon: "/favicon.ico" });
+	} else if (Notification.permission !== "denied") {
+		Notification.requestPermission().then(function (perm) {
+			if (perm === "granted") {
+				new Notification("Cliclaw", { body: "任务执行完成", icon: "/favicon.ico" });
+			}
+		});
+	}
 }
 
 function fetchCommands() {
@@ -969,6 +990,11 @@ function initApp() {
 	initDomReferences();
 	renderExecutionCards();
 	syncExecutionPanelWidth();
+
+	// Request notification permission early
+	if ("Notification" in window && Notification.permission === "default") {
+		Notification.requestPermission();
+	}
 
 	// Panel tab switching
 	const panelTabs = document.querySelectorAll(".panel-tab");
