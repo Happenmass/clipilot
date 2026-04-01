@@ -35,6 +35,7 @@ const collapsedExecutionRuns = new Set();
 let activePanelTab = "terminal";
 const sessionTerminals = new Map();
 let activeSessionTab = null;
+let terminalMoreLoading = false;
 const EXECUTION_PANEL_DEFAULT_WIDTH = 420;
 const EXECUTION_PANEL_MIN_WIDTH = 320;
 const EXECUTION_PANEL_HIDE_THRESHOLD = 180;
@@ -958,9 +959,10 @@ function renderTerminalContent() {
 	}
 
 	const data = sessionTerminals.get(activeSessionTab);
-	// Smart scroll: only auto-scroll if user is at bottom
 	const el = terminalContentEl;
 	const isAtBottom = el.scrollHeight - el.scrollTop - el.clientHeight < 30;
+	const prevScrollHeight = el.scrollHeight;
+	const prevScrollTop = el.scrollTop;
 
 	el.innerHTML = renderAnsiToHtml(data.paneContent);
 
@@ -973,6 +975,17 @@ function renderTerminalContent() {
 
 	if (isAtBottom) {
 		el.scrollTop = el.scrollHeight;
+	} else {
+		// Preserve scroll position when content grows at the top (history loaded)
+		const delta = el.scrollHeight - prevScrollHeight;
+		if (delta > 0) {
+			el.scrollTop = prevScrollTop + delta;
+		}
+	}
+
+	// Clear loading state after content is updated
+	if (terminalMoreLoading) {
+		terminalMoreLoading = false;
 	}
 }
 
@@ -1001,6 +1014,17 @@ function initApp() {
 	for (const tab of panelTabs) {
 		tab.addEventListener("click", function () {
 			switchPanelTab(this.dataset.panel);
+		});
+	}
+
+	// Terminal scroll-to-top: load more history
+	if (terminalContentEl) {
+		terminalContentEl.addEventListener("scroll", function () {
+			if (this.scrollTop > 0) return;
+			if (!activeSessionTab || terminalMoreLoading) return;
+			if (!ws || ws.readyState !== WebSocket.OPEN) return;
+			terminalMoreLoading = true;
+			ws.send(JSON.stringify({ type: "terminal_more", sessionId: activeSessionTab }));
 		});
 	}
 

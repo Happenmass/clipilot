@@ -114,8 +114,29 @@ export async function startServer(opts: ServerOptions): Promise<ServerInstance> 
 	});
 
 	// ─── Session terminal snapshot helper ───────────────
+	const DEFAULT_TERMINAL_LINES = 100;
+	const TERMINAL_LINES_INCREMENT = 50;
+	/** Per-session requested line count (default 100, grows by 50 on each "terminal_more") */
+	const sessionTerminalLines = new Map<string, number>();
+
+	function getTerminalLines(sessionId: string): number {
+		return sessionTerminalLines.get(sessionId) ?? DEFAULT_TERMINAL_LINES;
+	}
+
+	function expandTerminalLines(sessionId: string): void {
+		const current = getTerminalLines(sessionId);
+		sessionTerminalLines.set(sessionId, current + TERMINAL_LINES_INCREMENT);
+	}
+
 	async function collectSessionTerminals() {
 		const activeSessions = mainAgent.getActiveSessions();
+		const activeIds = new Set(activeSessions.map((s) => s.sessionId));
+
+		// Clean up entries for sessions that no longer exist
+		for (const id of sessionTerminalLines.keys()) {
+			if (!activeIds.has(id)) sessionTerminalLines.delete(id);
+		}
+
 		const sessions: Array<{
 			sessionName: string;
 			sessionId: string;
@@ -126,9 +147,10 @@ export async function startServer(opts: ServerOptions): Promise<ServerInstance> 
 		for (const s of activeSessions) {
 			let paneContent = "";
 			try {
+				const lines = getTerminalLines(s.sessionId);
 				const capture = await bridge.capturePane(s.paneTarget, {
 					escapeSequences: true,
-					startLine: -100,
+					startLine: -lines,
 				});
 				paneContent = capture.content;
 			} catch {
@@ -204,7 +226,7 @@ export async function startServer(opts: ServerOptions): Promise<ServerInstance> 
 			ws.close(1008, "Unauthorized");
 			return;
 		}
-		handleWebSocket(ws, { mainAgent, broadcaster, commandRouter, bridge });
+		handleWebSocket(ws, { mainAgent, broadcaster, commandRouter, bridge, onTerminalMore: expandTerminalLines });
 	});
 
 	// ─── Start listening ────────────────────────────────

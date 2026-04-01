@@ -19,6 +19,7 @@ export function handleWebSocket(
 		broadcaster: ChatBroadcaster;
 		commandRouter: CommandRouter;
 		bridge: TmuxBridge;
+		onTerminalMore?: (sessionId: string) => void;
 	},
 ): void {
 	const { mainAgent, broadcaster, commandRouter, bridge } = opts;
@@ -138,6 +139,18 @@ export function handleWebSocket(
 					}
 				} catch (err: any) {
 					logger.error("ws-handler", `terminal_input error: ${err.message}`);
+				}
+				break;
+			}
+
+			case "terminal_more": {
+				const sessionId = parsed.sessionId as string;
+				if (!sessionId) {
+					logger.warn("ws-handler", "terminal_more missing sessionId");
+					return;
+				}
+				if (opts.onTerminalMore) {
+					opts.onTerminalMore(sessionId);
 				}
 				break;
 			}
