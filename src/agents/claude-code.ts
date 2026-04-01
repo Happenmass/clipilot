@@ -47,6 +47,9 @@ export class ClaudeCodeAdapter implements AgentAdapter {
 	async sendPrompt(bridge: TmuxBridge, paneTarget: string, prompt: string): Promise<void> {
 		logger.info("claude-code", `Sending prompt (${prompt.length} chars)`);
 
+		// Auto-clear stuck "❯ (current)" state before sending prompt
+		await this.clearStuckState(bridge, paneTarget);
+
 		// Send the prompt text first
 		await bridge.sendText(paneTarget, prompt);
 
@@ -55,6 +58,26 @@ export class ClaudeCodeAdapter implements AgentAdapter {
 
 		// Press Enter to submit
 		await bridge.sendEnter(paneTarget);
+	}
+
+	/**
+	 * Detect and auto-clear the stuck "❯ (current)" state.
+	 * Claude Code sometimes lands on a resume-session picker showing "❯ (current)";
+	 * pressing Enter dismisses it and returns to the normal input prompt.
+	 * This is transparent to MainAgent and the user.
+	 */
+	private async clearStuckState(bridge: TmuxBridge, paneTarget: string): Promise<void> {
+		try {
+			const capture = await bridge.capturePane(paneTarget, { startLine: -5 });
+			const tail = capture.content;
+			if (/❯\s*\(current\)/i.test(tail)) {
+				logger.info("claude-code", "Detected stuck '❯ (current)' state, sending Enter to clear");
+				await bridge.sendEnter(paneTarget);
+				await sleep(500);
+			}
+		} catch {
+			// Pane may have been destroyed — ignore silently
+		}
 	}
 
 	async sendResponse(bridge: TmuxBridge, paneTarget: string, response: string): Promise<void> {
