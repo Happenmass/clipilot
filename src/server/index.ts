@@ -6,6 +6,9 @@ import { type WebSocket, WebSocketServer } from "ws";
 import type { ContextManager } from "../core/context-manager.js";
 import type { MainAgent } from "../core/main-agent.js";
 import type { SignalRouter } from "../core/signal-router.js";
+import type { LLMClient } from "../llm/client.js";
+import type { PromptLoader } from "../llm/prompt-loader.js";
+import type { MemoryStore } from "../memory/store.js";
 import type { ConversationStore } from "../persistence/conversation-store.js";
 import type { TmuxBridge } from "../tmux/bridge.js";
 import { logger } from "../utils/logger.js";
@@ -30,6 +33,11 @@ export interface ServerOptions {
 	executionEventStore: ExecutionEventStore;
 	uiEventStore?: UiEventStore;
 	onReset?: () => Promise<void>;
+	/** Dependencies for /tidy command */
+	llmClient?: LLMClient;
+	promptLoader?: PromptLoader;
+	memoryStore?: MemoryStore;
+	syncMemory?: () => Promise<void>;
 }
 
 export interface ServerInstance {
@@ -54,6 +62,10 @@ export async function startServer(opts: ServerOptions): Promise<ServerInstance> 
 		executionEventStore,
 		uiEventStore = new UiEventStore(),
 		onReset,
+		llmClient,
+		promptLoader,
+		memoryStore,
+		syncMemory,
 	} = opts;
 
 	const app = express();
@@ -219,6 +231,10 @@ export async function startServer(opts: ServerOptions): Promise<ServerInstance> 
 		executionEventStore,
 		uiEventStore,
 		onReset,
+		llmClient,
+		promptLoader,
+		memoryStore,
+		syncMemory,
 	});
 
 	wss.on("connection", (ws: WebSocket, req) => {

@@ -151,8 +151,122 @@ describe("CommandRouter", () => {
 		});
 	});
 
+	describe("/tidy", () => {
+		it("should broadcast unavailable message when dependencies are missing", async () => {
+			setup();
+			await commandRouter.handle("tidy");
+			expect(mockBroadcaster.broadcast).toHaveBeenCalledWith(
+				expect.objectContaining({ type: "system", message: expect.stringContaining("不可用") }),
+			);
+		});
+
+		it("should broadcast empty message when no memory files exist", async () => {
+			mockAgent = createMockMainAgent("idle");
+			mockRouter = createMockSignalRouter();
+			mockCtx = createMockContextManager();
+			mockBroadcaster = createMockBroadcaster();
+			commandRegistry = new CommandRegistry();
+
+			const mockLlmClient = { completeJson: vi.fn() } as any;
+			const mockPromptLoader = { resolve: vi.fn().mockReturnValue("prompt") } as any;
+			const mockMemoryStore = {
+				getStorageDir: vi.fn().mockReturnValue("/tmp/nonexistent-dir"),
+				markDirty: vi.fn(),
+			} as any;
+			const mockSyncMemory = vi.fn().mockResolvedValue(undefined);
+
+			commandRouter = new CommandRouter({
+				mainAgent: mockAgent,
+				signalRouter: mockRouter,
+				contextManager: mockCtx,
+				broadcaster: mockBroadcaster,
+				commandRegistry,
+				llmClient: mockLlmClient,
+				promptLoader: mockPromptLoader,
+				memoryStore: mockMemoryStore,
+				syncMemory: mockSyncMemory,
+			});
+
+			await commandRouter.handle("tidy");
+
+			const calls = mockBroadcaster.broadcast.mock.calls.map((c: any) => c[0]);
+			expect(calls.some((c: any) => c.type === "system" && c.message.includes("正在整理"))).toBe(true);
+			expect(calls.some((c: any) => c.type === "system" && c.message.includes("无需整理"))).toBe(true);
+			// LLM should not have been called (all files skipped)
+			expect(mockLlmClient.completeJson).not.toHaveBeenCalled();
+		});
+
+		it("should process existing memory files with LLM", async () => {
+			const { mkdtemp, mkdir, writeFile, rm } = await import("node:fs/promises");
+			const { tmpdir } = await import("node:os");
+			const { join } = await import("node:path");
+
+			const tmpDir = await mkdtemp(join(tmpdir(), "cliclaw-tidy-"));
+			await mkdir(join(tmpDir, "memory"), { recursive: true });
+			await writeFile(join(tmpDir, "memory/core.md"), "# Core\n- old decision\n- current decision");
+
+			try {
+				mockAgent = createMockMainAgent("idle");
+				mockRouter = createMockSignalRouter();
+				mockCtx = createMockContextManager();
+				mockBroadcaster = createMockBroadcaster();
+				commandRegistry = new CommandRegistry();
+
+				const mockLlmClient = {
+					completeJson: vi.fn().mockResolvedValue({
+						retained: "# Core\n- current decision",
+						archived: "- old decision",
+						summary: "Archived 1 outdated decision",
+					}),
+				} as any;
+
+				const mockPromptLoader = { resolve: vi.fn().mockReturnValue("prompt") } as any;
+				const mockMemoryStore = {
+					getStorageDir: vi.fn().mockReturnValue(tmpDir),
+					write: vi.fn().mockResolvedValue({ success: true, path: "memory/core.md" }),
+					markDirty: vi.fn(),
+				} as any;
+				const mockSyncMemory = vi.fn().mockResolvedValue(undefined);
+
+				commandRouter = new CommandRouter({
+					mainAgent: mockAgent,
+					signalRouter: mockRouter,
+					contextManager: mockCtx,
+					broadcaster: mockBroadcaster,
+					commandRegistry,
+					llmClient: mockLlmClient,
+					promptLoader: mockPromptLoader,
+					memoryStore: mockMemoryStore,
+					syncMemory: mockSyncMemory,
+				});
+
+				await commandRouter.handle("tidy");
+
+				// LLM should have been called for core.md
+				expect(mockLlmClient.completeJson).toHaveBeenCalledTimes(1);
+
+				// Should write retained content (overwrite) and archived content (append)
+				expect(mockMemoryStore.write).toHaveBeenCalledWith(
+					expect.objectContaining({ path: "memory/core.md", mode: "overwrite" }),
+				);
+				expect(mockMemoryStore.write).toHaveBeenCalledWith(
+					expect.objectContaining({ path: expect.stringMatching(/memory\/\d{4}-\d{2}-\d{2}\.md/) }),
+				);
+
+				// Should sync memory
+				expect(mockSyncMemory).toHaveBeenCalled();
+
+				// Should broadcast completion
+				const calls = mockBroadcaster.broadcast.mock.calls.map((c: any) => c[0]);
+				expect(calls.some((c: any) => c.type === "system" && c.message.includes("整理完成"))).toBe(true);
+			} finally {
+				await rm(tmpDir, { recursive: true, force: true });
+			}
+		});
+	});
+
 	describe("built-in command registration", () => {
-		it("should register stop, resume, clear, reset, compact into CommandRegistry", () => {
+		it("should register all built-in commands into CommandRegistry", () => {
 			setup();
 			expect(commandRegistry.has("stop")).toBe(true);
 			expect(commandRegistry.has("resume")).toBe(true);
@@ -160,7 +274,8 @@ describe("CommandRouter", () => {
 			expect(commandRegistry.has("reset")).toBe(true);
 			expect(commandRegistry.has("compact")).toBe(true);
 			expect(commandRegistry.has("context")).toBe(true);
-			expect(commandRegistry.size).toBe(6);
+			expect(commandRegistry.has("tidy")).toBe(true);
+			expect(commandRegistry.size).toBe(7);
 		});
 	});
 
