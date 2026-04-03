@@ -1,15 +1,23 @@
 {
-	"name": "cliclaw",
-	"version": "0.1.0",
-	"description": "TUI meta-orchestrator that commands coding agents via tmux",
+	"name": "@happenmass/cliclaw",
+	"version": "1.0.0",
+	"description": "Chat-based meta-orchestrator that commands coding agents via tmux",
 	"type": "module",
+	"license": "MIT",
+	"keywords": ["cli", "tmux", "ai", "agent", "orchestrator", "claude", "coding-agent"],
 	"bin": {
 		"cliclaw": "./dist/main.js"
 	},
+	"files": [
+		"dist",
+		"web",
+		"prompts"
+	],
 	"scripts": {
 		"build": "tsc && cp -r src/agents/claude-code-skills dist/agents/",
 		"dev": "tsc --watch",
 		"start": "node --max-old-space-size=8192 dist/main.js",
+		"prepublishOnly": "npm run build",
 		"test": "vitest run",
 		"test:watch": "vitest",
 		"check": "biome check src/",

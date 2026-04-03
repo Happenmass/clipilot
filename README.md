@@ -34,11 +34,8 @@ sudo apt install tmux
 ## Quick Start
 
 ```bash
-# Clone and install
-git clone <repo-url>
-cd cliclaw
-npm install
-npm run build
+# Install globally
+npm install -g @happenmass/cliclaw
 
 # Start the server (default port 3120)
 cliclaw
@@ -194,7 +191,16 @@ Config at `~/.cliclaw/config.json`. Edit directly or use `cliclaw config`.
 ## Development
 
 ```bash
-npm run build          # tsc — compile to dist/
+# Clone and install from source
+git clone <repo-url>
+cd cliclaw
+npm install
+npm run build
+
+# Run locally
+npm start
+
+# Dev commands
 npm run dev            # tsc --watch
 npm test               # vitest run — all tests
 npm run test:watch     # vitest — watch mode
