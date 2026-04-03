@@ -1,4 +1,4 @@
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { WebSocket } from "ws";
 import { startServer, type ServerInstance } from "../../src/server/index.js";
 import { CommandRegistry } from "../../src/server/command-registry.js";
@@ -379,6 +379,142 @@ describe("startServer", () => {
 		const terminalMsg = broadcasts.find((m) => m.type === "agent_terminals");
 		expect(terminalMsg).toBeDefined();
 		expect(terminalMsg.agents).toEqual([]);
+	});
+
+	describe("scheduled nightly tidy", () => {
+		beforeEach(() => {
+			vi.useFakeTimers();
+		});
+
+		afterEach(() => {
+			vi.useRealTimers();
+		});
+
+		it("should trigger tidy at 23:30", async () => {
+			// Set current time to 23:00 — tidy should fire in 30 minutes
+			vi.setSystemTime(new Date("2026-04-03T23:00:00"));
+
+			const broadcasts: any[] = [];
+			const broadcaster = createBroadcasterMock();
+			broadcaster.broadcast = (msg: any) => {
+				broadcasts.push(msg);
+			};
+
+			server = await startServer({
+				host: "127.0.0.1",
+				port: 0,
+				mainAgent: createMainAgentMock(),
+				signalRouter: createSignalRouterMock(),
+				contextManager: createContextManagerMock(),
+				conversationStore: createConversationStoreMock(),
+				broadcaster,
+				bridge: createBridgeMock(),
+				commandRegistry: new CommandRegistry(),
+				executionEventStore: new ExecutionEventStore(),
+				// No llmClient/promptLoader/memoryStore → tidy will broadcast "不可用"
+			});
+
+			// Advance 30 minutes to hit 23:30
+			await vi.advanceTimersByTimeAsync(30 * 60 * 1000);
+
+			const tidyMsg = broadcasts.find((m) => m.type === "system" && m.message.includes("不可用"));
+			expect(tidyMsg).toBeDefined();
+		});
+
+		it("should not trigger tidy before 23:30", async () => {
+			vi.setSystemTime(new Date("2026-04-03T23:00:00"));
+
+			const broadcasts: any[] = [];
+			const broadcaster = createBroadcasterMock();
+			broadcaster.broadcast = (msg: any) => {
+				broadcasts.push(msg);
+			};
+
+			server = await startServer({
+				host: "127.0.0.1",
+				port: 0,
+				mainAgent: createMainAgentMock(),
+				signalRouter: createSignalRouterMock(),
+				contextManager: createContextManagerMock(),
+				conversationStore: createConversationStoreMock(),
+				broadcaster,
+				bridge: createBridgeMock(),
+				commandRegistry: new CommandRegistry(),
+				executionEventStore: new ExecutionEventStore(),
+			});
+
+			// Advance only 20 minutes — should NOT trigger yet
+			await vi.advanceTimersByTimeAsync(20 * 60 * 1000);
+
+			const tidyMsg = broadcasts.find((m) => m.type === "system" && m.message.includes("不可用"));
+			expect(tidyMsg).toBeUndefined();
+		});
+
+		it("should schedule for next day if already past 23:30", async () => {
+			// Set current time to 23:45 — should schedule for tomorrow 23:30
+			vi.setSystemTime(new Date("2026-04-03T23:45:00"));
+
+			const broadcasts: any[] = [];
+			const broadcaster = createBroadcasterMock();
+			broadcaster.broadcast = (msg: any) => {
+				broadcasts.push(msg);
+			};
+
+			server = await startServer({
+				host: "127.0.0.1",
+				port: 0,
+				mainAgent: createMainAgentMock(),
+				signalRouter: createSignalRouterMock(),
+				contextManager: createContextManagerMock(),
+				conversationStore: createConversationStoreMock(),
+				broadcaster,
+				bridge: createBridgeMock(),
+				commandRegistry: new CommandRegistry(),
+				executionEventStore: new ExecutionEventStore(),
+			});
+
+			// Advance 30 minutes (still today) — should NOT trigger
+			await vi.advanceTimersByTimeAsync(30 * 60 * 1000);
+			expect(broadcasts.find((m) => m.type === "system" && m.message.includes("不可用"))).toBeUndefined();
+
+			// Advance to tomorrow 23:30 (23h15m more from 00:15)
+			await vi.advanceTimersByTimeAsync(23 * 60 * 60 * 1000 + 15 * 60 * 1000);
+			const tidyMsg = broadcasts.find((m) => m.type === "system" && m.message.includes("不可用"));
+			expect(tidyMsg).toBeDefined();
+		});
+
+		it("should re-schedule after tidy executes", async () => {
+			vi.setSystemTime(new Date("2026-04-03T23:00:00"));
+
+			const broadcasts: any[] = [];
+			const broadcaster = createBroadcasterMock();
+			broadcaster.broadcast = (msg: any) => {
+				broadcasts.push(msg);
+			};
+
+			server = await startServer({
+				host: "127.0.0.1",
+				port: 0,
+				mainAgent: createMainAgentMock(),
+				signalRouter: createSignalRouterMock(),
+				contextManager: createContextManagerMock(),
+				conversationStore: createConversationStoreMock(),
+				broadcaster,
+				bridge: createBridgeMock(),
+				commandRegistry: new CommandRegistry(),
+				executionEventStore: new ExecutionEventStore(),
+			});
+
+			// First trigger at 23:30
+			await vi.advanceTimersByTimeAsync(30 * 60 * 1000);
+			const firstCount = broadcasts.filter((m) => m.type === "system" && m.message.includes("不可用")).length;
+			expect(firstCount).toBe(1);
+
+			// Advance 24 hours to next 23:30
+			await vi.advanceTimersByTimeAsync(24 * 60 * 60 * 1000);
+			const secondCount = broadcasts.filter((m) => m.type === "system" && m.message.includes("不可用")).length;
+			expect(secondCount).toBe(2);
+		});
 	});
 
 	it("should return recent ui summary events from the API", async () => {

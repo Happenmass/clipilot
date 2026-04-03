@@ -37,6 +37,9 @@ sudo apt install tmux
 # Install globally
 npm install -g @happenmass/cliclaw
 
+# Upgrade to latest version
+npm update -g @happenmass/cliclaw
+
 # Start the server (default port 3120)
 cliclaw
 

@@ -245,6 +245,34 @@ export async function startServer(opts: ServerOptions): Promise<ServerInstance> 
 		handleWebSocket(ws, { mainAgent, broadcaster, commandRouter, bridge, onTerminalMore: expandTerminalLines });
 	});
 
+	// ─── Scheduled nightly tidy (23:30) ────────────────
+	let tidyTimer: ReturnType<typeof setTimeout> | null = null;
+
+	function scheduleTidy() {
+		const now = new Date();
+		const target = new Date(now);
+		target.setHours(23, 30, 0, 0);
+		if (target.getTime() <= now.getTime()) {
+			// Already past 23:30 today — schedule for tomorrow
+			target.setDate(target.getDate() + 1);
+		}
+		const delay = target.getTime() - now.getTime();
+		logger.info("server", `Next scheduled tidy at ${target.toLocaleString()} (in ${Math.round(delay / 60000)}min)`);
+
+		tidyTimer = setTimeout(async () => {
+			logger.info("server", "Running scheduled nightly tidy");
+			try {
+				await commandRouter.handle("tidy");
+			} catch (err: any) {
+				logger.warn("server", `Scheduled tidy failed: ${err.message}`);
+			}
+			// Re-schedule for next night
+			scheduleTidy();
+		}, delay);
+	}
+
+	scheduleTidy();
+
 	// ─── Start listening ────────────────────────────────
 	return new Promise<ServerInstance>((resolve, reject) => {
 		server.on("error", (err: NodeJS.ErrnoException) => {
@@ -265,6 +293,7 @@ export async function startServer(opts: ServerOptions): Promise<ServerInstance> 
 			resolve({
 				port: actualPort,
 				close: async () => {
+					if (tidyTimer) clearTimeout(tidyTimer);
 					clearInterval(terminalBroadcastInterval);
 					// Close all WebSocket connections
 					for (const client of wss.clients) {
