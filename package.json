@@ -1,10 +1,18 @@
 {
 	"name": "@happenmass/cliclaw",
-	"version": "1.0.0",
+	"version": "1.0.1",
 	"description": "Chat-based meta-orchestrator that commands coding agents via tmux",
 	"type": "module",
 	"license": "MIT",
-	"keywords": ["cli", "tmux", "ai", "agent", "orchestrator", "claude", "coding-agent"],
+	"keywords": [
+		"cli",
+		"tmux",
+		"ai",
+		"agent",
+		"orchestrator",
+		"claude",
+		"coding-agent"
+	],
 	"bin": {
 		"cliclaw": "./dist/main.js"
 	},
