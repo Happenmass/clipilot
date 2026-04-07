@@ -128,7 +128,6 @@ Cliclaw 架构深度分析（Chat-Driven MainAgent）
    │         │            │  │  tool="memory_*" ──▶ MemoryStore 操作       │            │               │           │  │
    │         │            │  │  tool="read_skill" ──▶ SkillReader          │            │               │           │  │
    │         │            │  │                             │              │            │               │           │  │
-   │         │            │  │  tool="mark_complete" ──▶ return {terminal:true} → IDLE │               │           │  │
    │         │            │  │  tool="mark_failed"  ──▶ return {terminal:true} → IDLE  │               │           │  │
    │         │            │  │  tool="escalate_to_human" ──▶ return {terminal:true}     │               │           │  │
    │         │            │  └─────────────────────────────────────────────────────────────────────────────────────┘  │
@@ -206,9 +205,6 @@ MainAgent 14 个 Tool 一览
 │ memory_write       │    否     │ 写入/更新记忆文件并同步索引               │
 ├────────────────────┼───────────┼───────────────────────────────────────────┤
 │ read_skill         │    否     │ 读取完整的 SKILL.md 技能文件内容          │
-├────────────────────┼───────────┼───────────────────────────────────────────┤
-│ mark_complete      │   ✓ 是   │ 标记任务成功完成，状态 → IDLE              │
-│                    │           │ → 返回 {terminal: true}                   │
 ├────────────────────┼───────────┼───────────────────────────────────────────┤
 │ mark_failed        │   ✓ 是   │ 标记任务失败，状态 → IDLE                  │
 │                    │           │ → 返回 {terminal: true}                   │
@@ -289,7 +285,7 @@ ContextManager 上下文管理
 │   │  [tool]  "Prompt sent to agent."                             │       │
 │   │  [asst]  tool_call: fetch_more(...)                          │       │
 │   │  [tool]  "(tmux pane content...)"                            │       │
-│   │  [asst]  tool_call: mark_complete({summary: "..."})          │       │
+│   │  [asst]  (text response → 流式广播 → 回到 IDLE)              │       │
 │   │  ...                                                         │       │
 │   │                                                              │       │
 │   │  addMessage() → 自动持久化到 ConversationStore (SQLite)      │       │
@@ -403,9 +399,8 @@ MainAgent 状态机
                                │              │              │
                                ▼              ▼              ▼
                          终止性 tool    stopRequested   继续执行
-                         (mark_complete  (用户 /stop)   (下一轮
-                          mark_failed                    LLM stream)
-                          escalate)
+                         (mark_failed   (用户 /stop)   (下一轮
+                          escalate)                     LLM stream)
                                │              │
                                ▼              ▼
                          ┌─────────┐
@@ -503,13 +498,13 @@ MainAgent 状态机
 │                │ 两层保护: 记忆刷新 (60%) + LLM 压缩 (70%)                │
 │                │ 服务器重启可从 SQLite 恢复对话状态                         │
 ├────────────────┼───────────────────────────────────────────────────────────┤
-│ 错误恢复       │ MainAgent 自主决策：mark_failed /                         │
-│                │ escalate_to_human，基于完整上下文推理                     │
+│ 错误恢复       │ MainAgent 自主决策：mark_failed /                          │
+│                │ escalate_to_human，基于完整上下文推理                      │
 ├────────────────┼───────────────────────────────────────────────────────────┤
 │ 技能系统       │ 发现 → 过滤 → 注册 → 注入。技能可贡献工具定义、          │
 │                │ 提示词片段、斜杠命令。workspace 覆盖 adapter               │
 ├────────────────┼───────────────────────────────────────────────────────────┤
-│ 工具系统       │ 14 个内置工具: 11 非终止性 + 3 终止性                     │
+│ 工具系统       │ 13 个内置工具: 11 非终止性 + 2 终止性                     │
 │                │ 技能可通过 tool-merge 动态注入额外工具                     │
 ├────────────────┼───────────────────────────────────────────────────────────┤
 │ 命令系统       │ CommandRegistry 注册中心: 内置 (/stop, /resume, /clear)   │

@@ -72,7 +72,7 @@ You (Browser) <--> WebSocket <--> MainAgent <--> LLM (streaming)
 3. For simple questions, it responds directly (stays **IDLE**)
 4. For tasks, it enters **EXECUTING** state and uses tools to create agents, send instructions, and monitor progress
 5. Summary updates stream back to your chat in real-time
-6. When done, it calls `mark_complete` and returns to **IDLE**
+6. When done, it responds to the user and returns to **IDLE**
 
 ## Chat Commands
 
@@ -127,7 +127,7 @@ The `memory_edit` tool supports four modes:
 | `memory_search` / `memory_get` / `memory_edit` | Memory operations |
 | `exec_command` | Read-only bash for reconnaissance |
 | `read_skill` | Load full skill instructions |
-| `mark_complete` / `mark_failed` / `escalate_to_human` | Task completion |
+| `mark_failed` / `escalate_to_human` | Task failure / escalation |
 
 ## CLI
 

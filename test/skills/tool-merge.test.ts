@@ -26,9 +26,9 @@ const BUILTIN_TOOLS: ToolDefinition[] = [
 		parameters: { type: "object", properties: { prompt: { type: "string" } }, required: ["prompt"] },
 	},
 	{
-		name: "mark_complete",
-		description: "Mark complete",
-		parameters: { type: "object", properties: { summary: { type: "string" } }, required: ["summary"] },
+		name: "mark_failed",
+		description: "Mark failed",
+		parameters: { type: "object", properties: { reason: { type: "string" } }, required: ["reason"] },
 	},
 ];
 

@@ -45,7 +45,7 @@ Subcommands: `config`, `doctor`, `init`, `remember` are handled before server st
 Chat-driven decision engine with a two-state machine: **IDLE** ↔ **EXECUTING**.
 
 - **IDLE**: Waits for user messages via `handleMessage(content)`. Streams LLM response. If LLM returns tool calls → transitions to EXECUTING. If pure text → stays IDLE.
-- **EXECUTING**: Self-loop executing tool calls. Between rounds: checks `stopRequested`, drains `MessageQueue` (human messages queued during execution), checks context thresholds. Terminal tools (`mark_complete`, `mark_failed`, `escalate_to_human`) return to IDLE.
+- **EXECUTING**: Self-loop executing tool calls. Between rounds: checks `stopRequested`, drains `MessageQueue` (human messages queued during execution), checks context thresholds. Terminal tools (`mark_failed`, `escalate_to_human`) return to IDLE. When the LLM responds with text only (no tool calls), it naturally returns to IDLE.
 
 Uses `llmClient.stream()` for all LLM calls — text deltas are broadcast to WebSocket clients in real-time.
 
@@ -53,7 +53,7 @@ Emits events: `state_change`, `log`. Built-in tools:
 - `send_to_agent` / `respond_to_agent` — interact with coding agent in tmux (both have required `summary` parameter for chat UI updates)
 - `inspect_agent` — capture agent pane content and task status
 - `list_agent_tasks` — list active sub-agent tasks and pending events
-- `mark_complete` / `mark_failed` — terminal: return to IDLE
+- `mark_failed` — terminal: return to IDLE
 - `escalate_to_human` — terminal: request human intervention
 - `memory_search` / `memory_get` — hybrid search and read memories
 - `memory_edit` — edit memory files (modes: append, overwrite, replace, delete). `memory_write` is a backwards-compatible alias

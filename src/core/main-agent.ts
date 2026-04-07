@@ -112,18 +112,6 @@ const TOOL_DEFINITIONS: ToolDefinition[] = [
 		},
 	},
 	{
-		name: "mark_complete",
-		description:
-			"Mark the current task as successfully completed and return to idle state. Call this when you have finished executing the user's request.",
-		parameters: {
-			type: "object",
-			properties: {
-				summary: { type: "string", description: "Brief summary of what was accomplished" },
-			},
-			required: ["summary"],
-		},
-	},
-	{
 		name: "mark_failed",
 		description:
 			"Mark the current task as failed and return to idle state. Use when the task cannot be accomplished.",
@@ -1312,13 +1300,6 @@ export class MainAgent extends EventEmitter<MainAgentEvents> {
 					output: `[Agent ${inspectAgentId}] Status: ${statusLabel}\n${paneContent}`,
 					terminal: false,
 				};
-			}
-
-			case "mark_complete": {
-				const summary = args.summary as string;
-				this.emit("log", `Task completed: ${summary}`);
-				this.broadcaster.broadcast({ type: "system", message: `任务完成: ${summary}` });
-				return { output: `Task marked as complete: ${summary}`, terminal: true };
 			}
 
 			case "mark_failed": {

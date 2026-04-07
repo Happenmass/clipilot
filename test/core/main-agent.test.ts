@@ -255,7 +255,7 @@ describe("MainAgent State Machine", () => {
 
 		it("should enter executing state when LLM returns tool calls", async () => {
 			const agent = setupAgent([
-				toolCallResponse("mark_complete", { summary: "Done" }),
+				toolCallResponse("mark_failed", { reason: "test" }),
 			]);
 
 			await agent.handleMessage("do something");
@@ -357,7 +357,7 @@ describe("MainAgent State Machine", () => {
 				[
 					toolCallResponse("create_agent", {}, "tc0"),
 					toolCallResponse("send_to_agent", { prompt: "work", summary: "Working" }, "tc1"),
-					toolCallResponse("mark_complete", { summary: "Done" }, "tc2"),
+					textResponse("Done"),
 				],
 				{},
 				{ withMonitor: true },
@@ -369,13 +369,13 @@ describe("MainAgent State Machine", () => {
 			// Wait for it to complete
 			await handlePromise;
 
-			// The agent should be back to idle after mark_complete
+			// The agent should be back to idle after text response
 			expect(agent.state).toBe("idle");
 		});
 	});
 
 	describe("IDLE → EXECUTING → IDLE flow", () => {
-		it("should complete full flow: text + tool call → execute → mark_complete → idle", async () => {
+		it("should complete full flow: text + tool call → execute → text response → idle", async () => {
 			const agent = setupAgent(
 				[
 					// First LLM call: tool call
@@ -386,8 +386,8 @@ describe("MainAgent State Machine", () => {
 						{ prompt: "implement feature", summary: "Implementing feature" },
 						"tc1",
 					),
-					// Third LLM call (after send_to_agent dispatch result): mark_complete
-					toolCallResponse("mark_complete", { summary: "Feature implemented" }, "tc2"),
+					// Third LLM call (after send_to_agent dispatch result): text response → idle
+					textResponse("Feature implemented successfully."),
 				],
 				{},
 				{ withMonitor: true },
@@ -397,11 +397,10 @@ describe("MainAgent State Machine", () => {
 
 			expect(agent.state).toBe("idle");
 
-			// Check system message for completion
+			// Check assistant_done was broadcast
 			expect(mockBroadcaster.broadcast).toHaveBeenCalledWith(
 				expect.objectContaining({
-					type: "system",
-					message: expect.stringContaining("任务完成"),
+					type: "assistant_done",
 				}),
 			);
 		});
@@ -413,7 +412,7 @@ describe("MainAgent State Machine", () => {
 				[
 					toolCallResponse("create_agent", {}, "tc0"),
 					toolCallResponse("send_to_agent", { prompt: "add auth", summary: "Adding JWT auth" }, "tc1"),
-					toolCallResponse("mark_complete", { summary: "Done" }, "tc2"),
+					textResponse("Done"),
 				],
 				{},
 				{ withMonitor: true },
@@ -432,7 +431,7 @@ describe("MainAgent State Machine", () => {
 				[
 					toolCallResponse("create_agent", {}, "tc0"),
 					toolCallResponse("send_to_agent", { prompt: "add auth", summary: "Adding JWT auth" }, "tc1"),
-					toolCallResponse("mark_complete", { summary: "Done" }, "tc2"),
+					textResponse("Done"),
 				],
 				{},
 				{ withMonitor: true },
@@ -501,15 +500,6 @@ describe("MainAgent State Machine", () => {
 	});
 
 	describe("terminal tools return to IDLE", () => {
-		it("mark_complete should return to idle", async () => {
-			const agent = setupAgent([
-				toolCallResponse("mark_complete", { summary: "Task done" }),
-			]);
-
-			await agent.handleMessage("do task");
-			expect(agent.state).toBe("idle");
-		});
-
 		it("mark_failed should return to idle", async () => {
 			const agent = setupAgent([
 				toolCallResponse("mark_failed", { reason: "Cannot proceed" }),
@@ -551,7 +541,7 @@ describe("MainAgent State Machine", () => {
 		it("should trigger compression when threshold exceeded", async () => {
 			const agent = setupAgent([
 				toolCallResponse("create_agent", {}, "tc0"),
-				toolCallResponse("mark_complete", { summary: "Done" }, "tc1"),
+				textResponse("Done"),
 			]);
 
 			mockCtx.shouldCompress.mockReturnValue(true);
@@ -834,7 +824,7 @@ describe("MainAgent State Machine", () => {
 			// First handleMessage: triggers exec_command (count resets to 0, then 1 → broadcasts)
 			const agent = setupAgent([
 				toolCallResponse("exec_command", { command: "ls", summary: "第一轮查看" }, "tc1"),
-				toolCallResponse("mark_complete", { summary: "Done" }, "tc2"),
+				textResponse("Done"),
 			]);
 
 			await agent.handleMessage("first task");
@@ -843,7 +833,7 @@ describe("MainAgent State Machine", () => {
 			// We need a new LLM to feed responses for second call
 			const secondResponses = [
 				toolCallResponse("exec_command", { command: "pwd", summary: "第二轮查看" }, "tc3"),
-				toolCallResponse("mark_complete", { summary: "Done again" }, "tc4"),
+				textResponse("Done again"),
 			];
 			let secondCallCount = 0;
 			(agent as any).llmClient = {
@@ -1196,7 +1186,7 @@ describe("MainAgent State Machine", () => {
 						// First call: user message → tool call (enters executing)
 						return (async function* () {
 							await firstStreamGate.promise;
-							for (const event of toolCallResponse("mark_complete", { summary: "Done" })) {
+							for (const event of toolCallResponse("mark_failed", { reason: "test" })) {
 								yield event;
 							}
 						})();

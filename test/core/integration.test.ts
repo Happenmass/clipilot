@@ -130,6 +130,24 @@ function toolCallEvents(
 	return events;
 }
 
+function textResponseEvents(text: string): LLMStreamEvent[] {
+	const events: LLMStreamEvent[] = [];
+	for (const char of text) {
+		events.push({ type: "text_delta", delta: char });
+	}
+	events.push({
+		type: "done",
+		response: {
+			content: text,
+			contentBlocks: [{ type: "text", text }],
+			usage: { inputTokens: 100, outputTokens: 50, totalTokens: 150 },
+			stopReason: "end_turn",
+			model: "test",
+		},
+	});
+	return events;
+}
+
 function createMockStreamingLLM(responses: LLMStreamEvent[][]) {
 	let callCount = 0;
 	return {
@@ -162,11 +180,11 @@ describe("Integration: Chat mode end-to-end", () => {
 		broadcaster = createMockBroadcaster();
 	});
 
-	it("should complete via create_agent → send_to_agent → mark_complete", async () => {
+	it("should complete via create_agent → send_to_agent → text response", async () => {
 		const llmClient = createMockStreamingLLM([
 			toolCallEvents("create_agent", {}, "tc0"),
 			toolCallEvents("send_to_agent", { prompt: "Implement the feature", summary: "Implementing feature" }, "tc1"),
-			toolCallEvents("mark_complete", { summary: "Feature implemented successfully" }, "tc2"),
+			textResponseEvents("Feature implemented successfully."),
 		]);
 
 		const contextManager = new ContextManager({ llmClient, promptLoader });
@@ -195,13 +213,13 @@ describe("Integration: Chat mode end-to-end", () => {
 			summary: "Implementing feature",
 		});
 		expect(broadcaster.broadcast).toHaveBeenCalledWith(
-			expect.objectContaining({ type: "system", message: expect.stringContaining("任务完成") }),
+			expect.objectContaining({ type: "assistant_done" }),
 		);
 	});
 
-	it("should complete via mark_complete tool directly (no agent interaction)", async () => {
+	it("should complete via text response directly (no agent interaction)", async () => {
 		const llmClient = createMockStreamingLLM([
-			toolCallEvents("mark_complete", { summary: "Goal achieved directly" }, "tc1"),
+			textResponseEvents("Goal achieved directly."),
 		]);
 
 		const contextManager = new ContextManager({ llmClient, promptLoader });
@@ -220,16 +238,16 @@ describe("Integration: Chat mode end-to-end", () => {
 
 		expect(mainAgent.state).toBe("idle");
 		expect(broadcaster.broadcast).toHaveBeenCalledWith(
-			expect.objectContaining({ type: "system", message: expect.stringContaining("任务完成") }),
+			expect.objectContaining({ type: "assistant_done" }),
 		);
 	});
 
-	it("should handle multi-step tool use: create_agent → inspect_agent → send_to_agent → complete", async () => {
+	it("should handle multi-step tool use: create_agent → inspect_agent → send_to_agent → text response", async () => {
 		const llmClient = createMockStreamingLLM([
 			toolCallEvents("create_agent", {}, "tc0"),
 			toolCallEvents("inspect_agent", { lines: 200 }, "tc1"),
 			toolCallEvents("send_to_agent", { prompt: "Fix the bug", summary: "Fixing bug" }, "tc2"),
-			toolCallEvents("mark_complete", { summary: "Bug fixed" }, "tc3"),
+			textResponseEvents("Bug fixed."),
 		]);
 
 		const contextManager = new ContextManager({ llmClient, promptLoader });
