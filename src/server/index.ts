@@ -4,6 +4,7 @@ import { fileURLToPath } from "node:url";
 import express from "express";
 import { type WebSocket, WebSocketServer } from "ws";
 import type { ContextManager } from "../core/context-manager.js";
+import type { LearningChat } from "../core/learning-chat.js";
 import type { LearningPipeline } from "../core/learning-pipeline.js";
 import type { LearningStore } from "../core/learning-store.js";
 import type { MainAgent } from "../core/main-agent.js";
@@ -40,6 +41,7 @@ export interface ServerOptions {
 	syncMemory?: () => Promise<void>;
 	learningStore?: LearningStore;
 	learningPipeline?: LearningPipeline;
+	learningChat?: LearningChat;
 }
 
 export interface ServerInstance {
@@ -69,6 +71,7 @@ export async function startServer(opts: ServerOptions): Promise<ServerInstance> 
 		syncMemory,
 		learningStore,
 		learningPipeline,
+		learningChat,
 	} = opts;
 
 	const app = express();
@@ -334,7 +337,14 @@ export async function startServer(opts: ServerOptions): Promise<ServerInstance> 
 			ws.close(1008, "Unauthorized");
 			return;
 		}
-		handleWebSocket(ws, { mainAgent, broadcaster, commandRouter, bridge, onTerminalMore: expandTerminalLines });
+		handleWebSocket(ws, {
+			mainAgent,
+			broadcaster,
+			commandRouter,
+			bridge,
+			onTerminalMore: expandTerminalLines,
+			learningChat,
+		});
 	});
 
 	// ─── Scheduled nightly tidy (23:30) ────────────────
