@@ -68,24 +68,29 @@ export class LearningStore {
 		const now = Date.now();
 		const diffBlobPath = join(this.diffDir, `${id}.diff`);
 		await writeFile(diffBlobPath, input.rawDiff, "utf-8");
-		this.db
-			.prepare(
-				`INSERT INTO learning_entries
-				(id, title, status, source_type, source_agents, agent_prompts, summary_json, diff_stats, diff_blob_path, memory_flushed_at, created_at, updated_at)
-				VALUES (?, ?, 'active', ?, ?, ?, ?, ?, ?, NULL, ?, ?)`,
-			)
-			.run(
-				id,
-				input.title,
-				input.sourceType,
-				JSON.stringify(input.sourceAgents),
-				JSON.stringify(input.agentPrompts),
-				JSON.stringify(input.summaryJson),
-				JSON.stringify(input.diffStats),
-				diffBlobPath,
-				now,
-				now,
-			);
+		try {
+			this.db
+				.prepare(
+					`INSERT INTO learning_entries
+					(id, title, status, source_type, source_agents, agent_prompts, summary_json, diff_stats, diff_blob_path, memory_flushed_at, created_at, updated_at)
+					VALUES (?, ?, 'active', ?, ?, ?, ?, ?, ?, NULL, ?, ?)`,
+				)
+				.run(
+					id,
+					input.title,
+					input.sourceType,
+					JSON.stringify(input.sourceAgents),
+					JSON.stringify(input.agentPrompts),
+					JSON.stringify(input.summaryJson),
+					JSON.stringify(input.diffStats),
+					diffBlobPath,
+					now,
+					now,
+				);
+		} catch (err) {
+			await unlink(diffBlobPath).catch(() => {});
+			throw err;
+		}
 		return (await this.loadEntry(id))!;
 	}
 

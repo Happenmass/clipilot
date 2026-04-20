@@ -1,3 +1,12 @@
+/**
+ * Non-spec, ULID-shaped 26-char random identifier generator.
+ *
+ * Produces strings shaped like ULIDs (10 time chars + 16 random chars using
+ * Crockford-like alphabet) for visual compatibility, but is NOT interoperable
+ * with real ULID parsers, and does NOT guarantee lexicographic monotonicity
+ * within the same millisecond. Used only for internal IDs where strict
+ * sortability is not required.
+ */
 import { randomBytes } from "node:crypto";
 
 const ALPHABET = "0123456789ABCDEFGHJKMNPQRSTVWXYZ";
