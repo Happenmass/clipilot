@@ -1,5 +1,5 @@
 import { logger } from "../utils/logger.js";
-import { type MemoryStore } from "./store.js";
+import type { MemoryStore } from "./store.js";
 import type {
 	EmbeddingProvider,
 	HybridKeywordResult,
