@@ -47,6 +47,8 @@ export type EmbeddingProvider = {
 	embedBatch: (texts: string[]) => Promise<number[][]>;
 	/** Optional eager initialization (e.g. download model at startup instead of first use) */
 	warmup?: () => Promise<void>;
+	/** Optional cleanup for native resources (e.g. local model context) */
+	dispose?: () => Promise<void>;
 };
 
 export type EmbeddingProviderRequest = "auto" | "openai" | "gemini" | "voyage" | "mistral" | "local";

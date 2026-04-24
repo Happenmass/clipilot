@@ -293,6 +293,19 @@ export function createLocalEmbeddingProvider(params: { modelPath: string; modelC
 
 		warmup: ensureLoaded,
 
+		dispose: async () => {
+			if (embeddingContext) {
+				try {
+					if (typeof embeddingContext.dispose === "function") {
+						await embeddingContext.dispose();
+					}
+				} catch {
+					/* best-effort */
+				}
+				embeddingContext = null;
+			}
+		},
+
 		embedQuery: async (text: string) => {
 			await ensureLoaded();
 			const result = await embeddingContext.getEmbeddingFor(text);

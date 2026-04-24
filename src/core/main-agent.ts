@@ -1476,8 +1476,9 @@ export class MainAgent extends EventEmitter<MainAgentEvents> {
 									}
 								}
 								this.changeTracker.releaseAgent(id);
-								this.promptTracker?.release(id);
 							}
+							// Always release prompt tracker, independent of learning pipeline
+							this.promptTracker?.release(id);
 							this.cleanupAgent(id);
 						}
 						this.activeAgentId = null;
@@ -1528,8 +1529,9 @@ export class MainAgent extends EventEmitter<MainAgentEvents> {
 							logger.warn("main-agent", `learning ingest failed for ${agentId}: ${(err as Error).message}`);
 						}
 						this.changeTracker.releaseAgent(agentId);
-						this.promptTracker?.release(agentId);
 					}
+					// Always release prompt tracker, independent of learning pipeline
+					this.promptTracker?.release(agentId);
 
 					// Cleanup agent registry
 					this.cleanupAgent(agentId);
