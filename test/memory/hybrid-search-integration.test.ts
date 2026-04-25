@@ -271,6 +271,36 @@ describe("Memory Hybrid Search Integration", () => {
 				expect(specificResults[0].score).toBeGreaterThan(results[0].score);
 			}
 		});
+
+		it("should return no results when categoryPathFilter is explicitly empty", async () => {
+			// Regression: when a category like 'daily' yields no matching files,
+			// buildCategoryPathFilter returns []. Earlier behavior treated [] the same as
+			// undefined and returned ALL files — leaking results across categories.
+			const results = await searchMemory(store, "architecture", provider, defaultConfig, {
+				maxResults: 5,
+				categoryPathFilter: [],
+			});
+			expect(results).toEqual([]);
+
+			// FTS-only path must also short-circuit
+			const ftsOnly = await searchMemory(store, "architecture", null, defaultConfig, {
+				maxResults: 5,
+				categoryPathFilter: [],
+			});
+			expect(ftsOnly).toEqual([]);
+		});
+
+		it("should respect a non-empty categoryPathFilter", async () => {
+			// Filter to only the architecture file — preferences/operations chunks must be excluded.
+			const results = await searchMemory(store, "architecture", provider, defaultConfig, {
+				maxResults: 10,
+				categoryPathFilter: ["memory/architecture.md"],
+			});
+			expect(results.length).toBeGreaterThan(0);
+			for (const r of results) {
+				expect(r.path).toBe("memory/architecture.md");
+			}
+		});
 	});
 
 	// ─── FTS-only mode (no embedding provider) ───────────
@@ -403,6 +433,46 @@ describe("Memory Hybrid Search Integration", () => {
 				// arch-001 has near-identical embedding → must be top-ranked
 				expect(results[0].id).toBe("arch-001");
 				// KNN must succeed without falling back to brute-force
+				expect(knnFailures).toEqual([]);
+			} finally {
+				unsubscribe();
+			}
+		});
+
+		it("should restore vecTableName after reopen so KNN survives restart", () => {
+			if (!knnStore.isVecAvailable()) return;
+
+			const dbPath = join(knnDir, "storage", "knn.sqlite");
+			const tableBeforeClose = knnStore.getVecTableName();
+			expect(tableBeforeClose).toBe("chunks_vec_mock_embed_v1_8");
+			knnStore.close();
+
+			// Reopen — sync would NOT call initVecTable when nothing changed,
+			// so the constructor must restore the name from sqlite_master itself.
+			knnStore = new MemoryStore({
+				dbPath,
+				workspaceDir: knnDir,
+				storageDir: join(knnDir, "storage"),
+				vectorEnabled: true,
+			});
+
+			expect(knnStore.getVecTableName()).toBe(tableBeforeClose);
+
+			const knnFailures: string[] = [];
+			const unsubscribe = logger.subscribe((entry) => {
+				if (entry.module === "memory-search" && entry.message.includes("Vec KNN search failed")) {
+					knnFailures.push(entry.message);
+				}
+			});
+
+			try {
+				const results = searchVector(
+					knnStore,
+					[0.85, 0.15, 0.0, 0.1, 0.0, 0.1, 0.05, 0.0],
+					"mock-embed-v1",
+					5,
+				);
+				expect(results[0].id).toBe("arch-001");
 				expect(knnFailures).toEqual([]);
 			} finally {
 				unsubscribe();
