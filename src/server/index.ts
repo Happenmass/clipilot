@@ -14,7 +14,9 @@ import type { PromptLoader } from "../llm/prompt-loader.js";
 import type { MemoryStore } from "../memory/store.js";
 import type { ConversationStore } from "../persistence/conversation-store.js";
 import type { TmuxBridge } from "../tmux/bridge.js";
+import { loadConfig, saveConfig } from "../utils/config.js";
 import { logger } from "../utils/logger.js";
+import { buildMcpServersSummary } from "../utils/mcp-config.js";
 import { buildAuthCookie, createServerAuthToken, isAuthorized } from "./auth.js";
 import type { ChatBroadcaster } from "./chat-broadcaster.js";
 import type { CommandRegistry } from "./command-registry.js";
@@ -131,6 +133,35 @@ export async function startServer(opts: ServerOptions): Promise<ServerInstance> 
 		const limitRaw = typeof req.query.limit === "string" ? Number.parseInt(req.query.limit, 10) : undefined;
 		const limit = Number.isFinite(limitRaw) ? limitRaw : 200;
 		res.json(uiEventStore.listRecent(limit));
+	});
+
+	// ─── MCP Server Config API ─────────────────────────
+	app.get("/api/config/mcp-servers", async (_req, res) => {
+		try {
+			const config = await loadConfig();
+			res.json(config.mcpServers ?? {});
+		} catch (err: any) {
+			logger.error("server", `Failed to load MCP servers config: ${err.message}`);
+			res.status(500).json({ error: "Failed to load config" });
+		}
+	});
+
+	app.put("/api/config/mcp-servers", async (req, res) => {
+		try {
+			const body = req.body;
+			if (body === null || typeof body !== "object" || Array.isArray(body)) {
+				res.status(400).json({ error: "Request body must be a JSON object" });
+				return;
+			}
+			const config = await loadConfig();
+			config.mcpServers = body;
+			await saveConfig(config);
+			contextManager.updateModule("available_mcp_servers", buildMcpServersSummary(config.mcpServers));
+			res.json(config.mcpServers);
+		} catch (err: any) {
+			logger.error("server", `Failed to save MCP servers config: ${err.message}`);
+			res.status(500).json({ error: "Failed to save config" });
+		}
 	});
 
 	// ─── Learning entries API ───────────────────────────

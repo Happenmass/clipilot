@@ -19,7 +19,9 @@ import type { UiEvent, UiEventStore, UiEventType } from "../server/ui-events.js"
 import type { SkillRegistry } from "../skills/registry.js";
 import type { TmuxBridge } from "../tmux/bridge.js";
 import type { StateDetector } from "../tmux/state-detector.js";
+import { loadConfig } from "../utils/config.js";
 import { logger } from "../utils/logger.js";
+import { cleanupMcpConfigFile, generateMcpConfigFile, selectMcpServers } from "../utils/mcp-config.js";
 import { AgentMonitor } from "./agent-monitor.js";
 import type { ChangeTracker } from "./change-tracker.js";
 import type { ContextManager } from "./context-manager.js";
@@ -238,6 +240,12 @@ const TOOL_DEFINITIONS: ToolDefinition[] = [
 					items: { type: "string" },
 					description:
 						'Shell commands to run before launching the agent. Each command is joined with " && " and prepended to the agent launch command. Example: ["export FOO=bar", "source .env"] results in: export FOO=bar && source .env && claude ...',
+				},
+				mcp_servers: {
+					type: "array",
+					items: { type: "string" },
+					description:
+						"Names of MCP servers to make available to this SubAgent. Uses server names from Cliclaw's MCP configuration. When provided, only these servers are available via --strict-mcp-config. When omitted, the SubAgent uses its default MCP behavior. Pass an empty array to launch with no MCP servers.",
 				},
 			},
 		},
@@ -1401,11 +1409,32 @@ export class MainAgent extends EventEmitter<MainAgentEvents> {
 						rawPreCommands && Array.isArray(rawPreCommands) && rawPreCommands.length > 0
 							? rawPreCommands.filter((c) => typeof c === "string" && c.trim())
 							: undefined;
+
+					// Handle mcp_servers: generate temp config file if specified
+					let mcpConfigPath: string | undefined;
+					const rawMcpServers = args.mcp_servers as string[] | undefined;
+					if (rawMcpServers !== undefined && Array.isArray(rawMcpServers)) {
+						const config = await loadConfig();
+						if (!config.mcpServers || Object.keys(config.mcpServers).length === 0) {
+							return {
+								output: "Error: No MCP servers configured. Add MCP servers via the settings UI or config.json.",
+								terminal: false,
+							};
+						}
+						const selection = selectMcpServers(config.mcpServers, rawMcpServers);
+						if ("error" in selection) {
+							return { output: `Error: ${selection.error}`, terminal: false };
+						}
+						mcpConfigPath = await generateMcpConfigFile(selection.servers, agentName);
+						logger.info("main-agent", `Generated MCP config for ${agentName}: ${mcpConfigPath}`);
+					}
+
 					const paneTarget = await this.adapter.launch(this.bridge, {
 						workingDir,
 						sessionName: agentName,
 						resumeId,
 						preCommands,
+						mcpConfigPath,
 					});
 					this.agents.set(agentName, { paneTarget, workingDir });
 					await this.changeTracker?.registerAgent(agentName, workingDir);
@@ -1414,8 +1443,9 @@ export class MainAgent extends EventEmitter<MainAgentEvents> {
 					this.stateDetector.setCharacteristics(this.adapter.getCharacteristics());
 					logger.info("main-agent", `Agent created: ${agentName}, pane: ${paneTarget}, cwd: ${workingDir}`);
 					this.onAgentChange?.();
+					const mcpNote = mcpConfigPath ? ` MCP servers: ${rawMcpServers!.join(", ")}.` : "";
 					return {
-						output: `Agent "${agentName}" created in ${workingDir}. Agent launched in ${paneTarget}. You can now use send_to_agent.`,
+						output: `Agent "${agentName}" created in ${workingDir}. Agent launched in ${paneTarget}.${mcpNote} You can now use send_to_agent.`,
 						terminal: false,
 					};
 				} catch (err: any) {
@@ -1496,6 +1526,8 @@ export class MainAgent extends EventEmitter<MainAgentEvents> {
 							}
 							// Always release prompt tracker, independent of learning pipeline
 							this.promptTracker?.release(id);
+							// Cleanup MCP config temp file (best-effort)
+							await cleanupMcpConfigFile(id).catch(() => {});
 							this.cleanupAgent(id);
 						}
 						this.activeAgentId = null;
@@ -1549,6 +1581,8 @@ export class MainAgent extends EventEmitter<MainAgentEvents> {
 					}
 					// Always release prompt tracker, independent of learning pipeline
 					this.promptTracker?.release(agentId);
+					// Cleanup MCP config temp file (best-effort)
+					await cleanupMcpConfigFile(agentId).catch(() => {});
 
 					// Cleanup agent registry
 					this.cleanupAgent(agentId);

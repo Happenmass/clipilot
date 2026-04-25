@@ -16,6 +16,8 @@ export interface LaunchOptions {
 	resumeId?: string;
 	/** Pre-commands to run before the agent launch command, joined with && */
 	preCommands?: string[];
+	/** Path to a temporary MCP config JSON file to pass via --mcp-config */
+	mcpConfigPath?: string;
 }
 
 export interface OpenSpecCommands {

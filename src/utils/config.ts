@@ -60,6 +60,17 @@ export interface LearningConfig {
 	enabled: boolean;
 }
 
+export interface McpServerDefinition {
+	command: string;
+	args?: string[];
+	env?: Record<string, string>;
+	type: "stdio" | "sse";
+	/** URL for SSE-type servers */
+	url?: string;
+	/** Human-readable description shown to the Main Agent when selecting MCPs for SubAgents. Not written to the runtime mcp config file. */
+	description?: string;
+}
+
 export interface MdnsConfig {
 	/** Whether to advertise the server over mDNS so it's reachable as `<name>.local`. Default true. */
 	enabled: boolean;
@@ -88,6 +99,7 @@ export interface CliclawConfig {
 	skills: SkillsConfig;
 	learning: LearningConfig;
 	mdns: MdnsConfig;
+	mcpServers?: Record<string, McpServerDefinition>;
 }
 
 const CONFIG_DIR = join(homedir(), ".cliclaw");
@@ -186,6 +198,7 @@ export async function loadConfig(): Promise<CliclawConfig> {
 			skills: { ...DEFAULT_CONFIG.skills, ...userConfig.skills },
 			learning: { ...DEFAULT_CONFIG.learning, ...userConfig.learning },
 			mdns: { ...DEFAULT_CONFIG.mdns, ...userConfig.mdns },
+			mcpServers: userConfig.mcpServers,
 		};
 	} catch {
 		return { ...DEFAULT_CONFIG };

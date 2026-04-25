@@ -56,6 +56,7 @@ import {
 } from "./utils/config.js";
 import { resolveLocale } from "./utils/locale.js";
 import { logger } from "./utils/logger.js";
+import { buildMcpServersSummary, cleanupAllMcpConfigFiles } from "./utils/mcp-config.js";
 
 function createMemorySyncRunner(params: {
 	memoryStore: MemoryStore;
@@ -731,6 +732,9 @@ async function main(): Promise<void> {
 	const capabilitiesSummary = buildCapabilitiesSummary(baseCapabilities, filteredSkills);
 	contextManager.updateModule("agent_capabilities", capabilitiesSummary);
 
+	// Inject configured MCP servers list so MainAgent knows what's available
+	contextManager.updateModule("available_mcp_servers", buildMcpServersSummary(config.mcpServers));
+
 	// Load persistent memory (MEMORY.md) into {{memory}} module
 	const globalDir = getConfigDir();
 	try {
@@ -884,6 +888,7 @@ async function main(): Promise<void> {
 		const resetBaseCaps = resetAdapterCaps || "Direct code editing and file operations\nRunning terminal commands";
 		const resetCapSummary = buildCapabilitiesSummary(resetBaseCaps, resetFiltered);
 		contextManager.updateModule("agent_capabilities", resetCapSummary);
+		contextManager.updateModule("available_mcp_servers", buildMcpServersSummary(config.mcpServers));
 
 		const resetOpenspec = defaultAdapter.getOpenSpecCommands?.() ?? {
 			toolName: "claude",
@@ -1068,6 +1073,9 @@ async function main(): Promise<void> {
 				/* best-effort */
 			}
 		}
+
+		// Clean up temporary MCP config files
+		await cleanupAllMcpConfigFiles().catch(() => {});
 
 		// Clean up runtime state (both daemon and foreground)
 		const state = await loadServerRuntimeState();

@@ -54,6 +54,7 @@ const agentTerminals = new Map();
 let activeAgentTab = null;
 let terminalMoreLoading = false;
 let lastRenderedTerminalContent = "";
+let lastTakeoverAutoFocused = false;
 const EXECUTION_PANEL_DEFAULT_WIDTH = 480;
 const EXECUTION_PANEL_MIN_WIDTH = 360;
 const EXECUTION_PANEL_HIDE_THRESHOLD = 200;
@@ -996,11 +997,14 @@ function renderTerminalContent() {
 	const el = terminalContentEl;
 	const isTakenOver = data.takenOver || false;
 
-	// When entering takeover mode, auto-focus the hidden IME input
+	// When first entering takeover mode, auto-focus the hidden IME input
 	// so the user can immediately type (and IME-compose) without an extra click.
-	if (isTakenOver && terminalImeInputEl && document.activeElement !== terminalImeInputEl) {
+	// Only focus on the *transition* into takeover — not on every render —
+	// so the user can click back to the main input without focus being stolen.
+	if (isTakenOver && !lastTakeoverAutoFocused && terminalImeInputEl) {
 		terminalImeInputEl.focus({ preventScroll: true });
 	}
+	lastTakeoverAutoFocused = isTakenOver;
 
 	// Status bar
 	if (terminalStatusbarEl) {

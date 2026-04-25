@@ -25,7 +25,13 @@
 				<span class="queue-pill" id="queue-pill" title="Queued user messages">actions queued</span>
 			</div>
 			<div class="header-spacer"></div>
-			<button class="theme-toggle" id="theme-toggle" type="button" title="切换主题" aria-label="切换主题">
+			<button class="header-icon-btn" id="settings-btn" type="button" title="MCP Settings" aria-label="MCP Settings">
+				<svg width="14" height="14" viewBox="0 0 14 14" fill="none">
+					<path d="M7 9a2 2 0 1 0 0-4 2 2 0 0 0 0 4z" stroke="currentColor" stroke-width="1.2"/>
+					<path d="M11.3 8.6a1 1 0 0 0 .2 1.1l.03.04a1.2 1.2 0 1 1-1.7 1.7l-.04-.04a1 1 0 0 0-1.1-.2 1 1 0 0 0-.6.92v.1a1.2 1.2 0 1 1-2.4 0v-.06a1 1 0 0 0-.66-.92 1 1 0 0 0-1.1.2l-.04.04a1.2 1.2 0 1 1-1.7-1.7l.04-.04a1 1 0 0 0 .2-1.1 1 1 0 0 0-.92-.6h-.1a1.2 1.2 0 0 1 0-2.4h.06a1 1 0 0 0 .92-.66 1 1 0 0 0-.2-1.1l-.04-.04a1.2 1.2 0 1 1 1.7-1.7l.04.04a1 1 0 0 0 1.1.2h.05a1 1 0 0 0 .6-.92v-.1a1.2 1.2 0 1 1 2.4 0v.06a1 1 0 0 0 .6.92 1 1 0 0 0 1.1-.2l.04-.04a1.2 1.2 0 1 1 1.7 1.7l-.04.04a1 1 0 0 0-.2 1.1v.05a1 1 0 0 0 .92.6h.1a1.2 1.2 0 0 1 0 2.4h-.06a1 1 0 0 0-.92.6z" stroke="currentColor" stroke-width="1.1" stroke-linecap="round" stroke-linejoin="round"/>
+				</svg>
+			</button>
+			<button class="header-icon-btn" id="theme-toggle" type="button" title="切换主题" aria-label="切换主题">
 				<svg id="theme-icon-sun" width="14" height="14" viewBox="0 0 14 14" fill="none">
 					<circle cx="7" cy="7" r="2.6" stroke="currentColor" stroke-width="1.3"/>
 					<g stroke="currentColor" stroke-width="1.3" stroke-linecap="round">
@@ -123,6 +129,51 @@
 		</div>
 	</div>
 
+	<!-- Settings Modal -->
+	<div id="settings-overlay" class="settings-overlay hidden">
+		<div id="settings-modal" class="settings-modal">
+			<div class="settings-header">
+				<h2>MCP Servers</h2>
+				<button id="settings-close" class="settings-close" type="button" aria-label="Close">&times;</button>
+			</div>
+			<div id="settings-body" class="settings-body">
+				<div id="mcp-list" class="mcp-list"></div>
+				<div id="mcp-empty" class="mcp-empty">No MCP servers configured. Click "Add" to register one.</div>
+			</div>
+			<div class="settings-footer">
+				<button id="mcp-add-btn" class="mcp-action-btn" type="button">+ Add Server</button>
+			</div>
+
+			<!-- Add / Edit form (hidden by default) -->
+			<div id="mcp-form" class="mcp-form hidden">
+				<div class="settings-header">
+					<h2 id="mcp-form-title">Add MCP Server</h2>
+					<button id="mcp-form-close" class="settings-close" type="button" aria-label="Close">&times;</button>
+				</div>
+				<div class="mcp-form-fields">
+					<label>Name<input id="mcp-f-name" type="text" placeholder="my-server" autocomplete="off"/></label>
+					<label>Description <span class="mcp-hint">(shown to the Main Agent when picking MCPs for SubAgents)</span><textarea id="mcp-f-description" rows="2" placeholder="What this MCP server does, e.g. 'Knowledge graph for token-efficient code review'"></textarea></label>
+					<label>Command<input id="mcp-f-command" type="text" placeholder="uvx" autocomplete="off"/></label>
+					<label>Args <span class="mcp-hint">(comma-separated)</span><input id="mcp-f-args" type="text" placeholder="code-review-graph, serve" autocomplete="off"/></label>
+					<label>Env <span class="mcp-hint">(KEY=VAL, one per line)</span><textarea id="mcp-f-env" rows="4" placeholder="API_KEY=xxx"></textarea></label>
+					<label>Type
+						<select id="mcp-f-type">
+							<option value="stdio" selected>stdio</option>
+							<option value="sse">sse</option>
+						</select>
+					</label>
+					<label id="mcp-f-url-group" class="hidden">URL<input id="mcp-f-url" type="text" placeholder="http://localhost:3001/sse" autocomplete="off"/></label>
+					<div id="mcp-form-error" class="mcp-form-error"></div>
+				</div>
+				<div class="settings-footer">
+					<button id="mcp-form-cancel" class="mcp-action-btn mcp-btn-secondary" type="button">Cancel</button>
+					<button id="mcp-form-save" class="mcp-action-btn" type="button">Save</button>
+				</div>
+			</div>
+		</div>
+	</div>
+
+	<script type="module" src="settings.js"></script>
 	<script type="module" src="app.js"></script>
 </body>
 </html>
