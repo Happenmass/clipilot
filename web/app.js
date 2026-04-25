@@ -1096,7 +1096,7 @@ function initApp() {
 
 		// Click on terminal in takeover mode → focus the hidden IME input so
 		// IME composition (e.g. Chinese pinyin) routes through it correctly.
-		terminalContentEl.addEventListener("mousedown", function () {
+		terminalContentEl.addEventListener("pointerdown", function () {
 			if (!activeTabIsTakenOver()) return;
 			// Defer so default focus behavior doesn't steal it back
 			setTimeout(function () {
@@ -1127,12 +1127,31 @@ function initApp() {
 			terminalImeInputEl.value = "";
 		});
 
+		// Mobile virtual keyboards often fire keydown with keyCode 229 for
+		// every key, including Enter — so the keydown handler never reaches
+		// the e.key === "Enter" branch.  Catch Enter here via beforeinput
+		// (inputType "insertLineBreak") which fires reliably on mobile.
+		terminalImeInputEl.addEventListener("beforeinput", function (e) {
+			if (e.inputType === "insertLineBreak" && activeTabIsTakenOver()) {
+				e.preventDefault();
+				sendTerminalInput("enter");
+				terminalImeInputEl.value = "";
+			}
+		});
+
 		// Direct (non-IME) typed characters arrive via input event with
 		// inputType "insertText" and isComposing === false.
 		terminalImeInputEl.addEventListener("input", function (e) {
 			if (e.isComposing || imeComposing) return;
 			if (!activeTabIsTakenOver()) {
 				terminalImeInputEl.value = "";
+				return;
+			}
+			// Mobile Enter fallback: if beforeinput didn't fire (older browsers),
+			// catch insertLineBreak here as a safety net.
+			if (e.inputType === "insertLineBreak") {
+				terminalImeInputEl.value = "";
+				sendTerminalInput("enter");
 				return;
 			}
 			const text = terminalImeInputEl.value;
