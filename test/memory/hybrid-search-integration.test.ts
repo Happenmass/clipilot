@@ -5,6 +5,7 @@ import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { MemoryStore } from "../../src/memory/store.js";
 import { searchMemory, searchKeyword, searchVector, cosineSimilarity } from "../../src/memory/search.js";
 import type { EmbeddingProvider, HybridSearchConfig } from "../../src/memory/types.js";
+import { logger } from "../../src/utils/logger.js";
 
 // ─── Realistic memory content ────────────────────────────
 
@@ -338,6 +339,74 @@ describe("Memory Hybrid Search Integration", () => {
 
 			const snippets = new Set(results.map((r) => r.snippet));
 			expect(snippets.size).toBe(results.length);
+		});
+	});
+
+	// ─── Vector search via sqlite-vec KNN ────────────────
+
+	describe("vector search (sqlite-vec KNN)", () => {
+		let knnDir: string;
+		let knnStore: MemoryStore;
+
+		beforeEach(async () => {
+			knnDir = await mkdtemp(join(tmpdir(), "cliclaw-knn-"));
+			const knnStorage = join(knnDir, "storage");
+			await mkdir(knnStorage, { recursive: true });
+
+			knnStore = new MemoryStore({
+				dbPath: join(knnStorage, "knn.sqlite"),
+				workspaceDir: knnDir,
+				storageDir: knnStorage,
+				vectorEnabled: true,
+			});
+
+			if (!knnStore.isVecAvailable()) {
+				return; // sqlite-vec not loadable in this environment — covered by brute-force tests
+			}
+
+			knnStore.initVecTable("mock-embed-v1", 8);
+			for (const chunk of MEMORY_CHUNKS) {
+				knnStore.insertChunk({
+					id: chunk.id,
+					path: chunk.path,
+					startLine: 1,
+					endLine: 10,
+					hash: `hash-${chunk.id}`,
+					model: "mock-embed-v1",
+					text: chunk.text,
+					embedding: chunk.embedding,
+				});
+			}
+		});
+
+		afterEach(async () => {
+			knnStore.close();
+			await rm(knnDir, { recursive: true, force: true });
+		});
+
+		it("should execute the KNN path without ReferenceError and return ranked results", () => {
+			if (!knnStore.isVecAvailable()) return; // skip when extension unavailable
+
+			const knnFailures: string[] = [];
+			const unsubscribe = logger.subscribe((entry) => {
+				if (entry.module === "memory-search" && entry.message.includes("Vec KNN search failed")) {
+					knnFailures.push(entry.message);
+				}
+			});
+
+			try {
+				const queryVec = [0.85, 0.15, 0.0, 0.1, 0.0, 0.1, 0.05, 0.0];
+				const results = searchVector(knnStore, queryVec, "mock-embed-v1", 5);
+
+				expect(results.length).toBeGreaterThan(0);
+				expect(results[0].vectorScore).toBeGreaterThanOrEqual(results[results.length - 1].vectorScore);
+				// arch-001 has near-identical embedding → must be top-ranked
+				expect(results[0].id).toBe("arch-001");
+				// KNN must succeed without falling back to brute-force
+				expect(knnFailures).toEqual([]);
+			} finally {
+				unsubscribe();
+			}
 		});
 	});
 
