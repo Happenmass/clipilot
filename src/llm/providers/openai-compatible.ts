@@ -70,6 +70,7 @@ export class OpenAICompatibleProvider implements LLMProvider {
 		let usage = { inputTokens: 0, outputTokens: 0, totalTokens: 0 };
 		let stopReason = "stop";
 		let model = this.model;
+		let lastReasoningTokens: number | undefined;
 
 		try {
 			while (true) {
@@ -102,14 +103,8 @@ export class OpenAICompatibleProvider implements LLMProvider {
 							totalTokens: data.usage.total_tokens || 0,
 						};
 						const reasoningTokens = data.usage.completion_tokens_details?.reasoning_tokens;
-						if (reasoningTokens && reasoningTokens > 0) {
-							const msg = `[${this.name}] reasoning_tokens=${reasoningTokens}`;
-							logger.info("llm", msg);
-							console.log(`[cliclaw] ${msg}`);
-						} else if (opts?.thinking && opts.thinking !== "off") {
-							const msg = `[${this.name}] reasoning_effort requested but reasoning_tokens=0 (model may ignore the field)`;
-							logger.info("llm", msg);
-							console.log(`[cliclaw] ${msg}`);
+						if (typeof reasoningTokens === "number") {
+							lastReasoningTokens = reasoningTokens;
 						}
 					}
 
@@ -154,6 +149,16 @@ export class OpenAICompatibleProvider implements LLMProvider {
 			}
 		} finally {
 			reader.releaseLock();
+		}
+
+		if (lastReasoningTokens !== undefined && lastReasoningTokens > 0) {
+			const msg = `[${this.name}] reasoning_tokens=${lastReasoningTokens}`;
+			logger.info("llm", msg);
+			console.log(`[cliclaw] ${msg}`);
+		} else if (opts?.thinking && opts.thinking !== "off") {
+			const msg = `[${this.name}] reasoning_effort requested but reasoning_tokens=0 (model may ignore the field)`;
+			logger.info("llm", msg);
+			console.log(`[cliclaw] ${msg}`);
 		}
 
 		// Build content blocks

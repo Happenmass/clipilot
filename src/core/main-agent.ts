@@ -7,7 +7,14 @@ import { dirname, join } from "node:path";
 import { promisify } from "node:util";
 import type { AgentAdapter } from "../agents/adapter.js";
 import type { LLMClient } from "../llm/client.js";
-import type { LLMMessage, LLMStreamEvent, MessageContent, ToolCallContent, ToolDefinition } from "../llm/types.js";
+import type {
+	LLMMessage,
+	LLMStreamEvent,
+	MessageContent,
+	ThinkingLevel,
+	ToolCallContent,
+	ToolDefinition,
+} from "../llm/types.js";
 import { buildCategoryPathFilter } from "../memory/category.js";
 import { loadPersistentMemory, readPersistentMemory, updatePersistentMemory } from "../memory/persistent.js";
 import { searchMemory } from "../memory/search.js";
@@ -374,7 +381,7 @@ export class MainAgent extends EventEmitter<MainAgentEvents> {
 	private embeddingProvider: EmbeddingProvider | null = null;
 	private skillRegistry: SkillRegistry | null = null;
 	private debug: boolean;
-	private thinking: "off" | "minimal" | "low" | "medium" | "high";
+	private thinking: ThinkingLevel;
 	private promptTracker: PromptTracker | undefined;
 	private learningPipeline: LearningPipeline | undefined;
 	private changeTracker: ChangeTracker | undefined;
@@ -420,7 +427,7 @@ export class MainAgent extends EventEmitter<MainAgentEvents> {
 		promptTracker?: PromptTracker;
 		learningPipeline?: LearningPipeline;
 		changeTracker?: ChangeTracker;
-		thinking?: "off" | "minimal" | "low" | "medium" | "high";
+		thinking?: ThinkingLevel;
 	}) {
 		super();
 		this.contextManager = opts.contextManager;

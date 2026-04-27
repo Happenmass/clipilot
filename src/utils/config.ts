@@ -2,8 +2,9 @@ import { existsSync } from "node:fs";
 import { mkdir, readFile, unlink, writeFile } from "node:fs/promises";
 import { homedir } from "node:os";
 import { join } from "node:path";
+import type { ThinkingLevel } from "../llm/types.js";
 
-export type ThinkingLevel = "off" | "minimal" | "low" | "medium" | "high";
+export type { ThinkingLevel };
 
 export interface LLMConfig {
 	provider: string;

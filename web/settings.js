@@ -183,6 +183,10 @@
 			formError.textContent = "Command is required.";
 			return;
 		}
+		if ((type === "sse" || type === "http") && !fUrl.value.trim()) {
+			formError.textContent = "URL is required.";
+			return;
+		}
 		if (!editingName && servers[name]) {
 			formError.textContent = `Server "${name}" already exists.`;
 			return;
@@ -212,7 +216,7 @@
 			if (Object.keys(env).length > 0) entry.env = env;
 		}
 
-		if ((type === "sse" || type === "http") && fUrl.value.trim()) {
+		if (type === "sse" || type === "http") {
 			entry.url = fUrl.value.trim();
 		}
 

@@ -78,14 +78,14 @@ export class AnthropicProvider implements LLMProvider {
 					fullText += event.delta.text;
 					yield { type: "text_delta", delta: event.delta.text };
 				} else if (event.delta.type === "thinking_delta") {
-					const chunk = (event.delta as any).thinking ?? "";
+					const chunk = event.delta.thinking ?? "";
 					thinkingChars += chunk.length;
 					yield { type: "thinking_delta", delta: chunk };
 				} else if (event.delta.type === "input_json_delta") {
 					yield {
 						type: "tool_call_delta",
 						index: event.index,
-						argumentsDelta: (event.delta as any).partial_json || "",
+						argumentsDelta: event.delta.partial_json || "",
 					};
 				}
 			}
@@ -142,8 +142,10 @@ export class AnthropicProvider implements LLMProvider {
 				type: "enabled",
 				budget_tokens: budget,
 			};
-			// Extended thinking requires higher max_tokens
-			if (params.max_tokens < budget + 1024) {
+			// Extended thinking requires higher max_tokens; resolve missing value before comparing.
+			const minMaxTokens = budget + 1024;
+			const resolvedMaxTokens = typeof params.max_tokens === "number" ? params.max_tokens : 0;
+			if (resolvedMaxTokens < minMaxTokens) {
 				params.max_tokens = budget + 4096;
 			}
 			const msg = `[anthropic] thinking enabled: level=${opts.thinking} budget_tokens=${budget} max_tokens=${params.max_tokens}`;
