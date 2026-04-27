@@ -1,4 +1,4 @@
-import { access, appendFile, mkdir, readFile, writeFile } from "node:fs/promises";
+import { access, appendFile, mkdir, readFile, stat, writeFile } from "node:fs/promises";
 import { dirname, isAbsolute, join } from "node:path";
 
 // ─── Constants ──────────────────────────────────────────
@@ -44,7 +44,7 @@ const PROJECT_MARKERS = [
 
 export type ProjectRootValidation =
 	| { ok: true }
-	| { ok: false; reason: "not_absolute" | "not_found" | "no_marker"; detail: string };
+	| { ok: false; reason: "not_absolute" | "not_found" | "not_directory" | "no_marker"; detail: string };
 
 /**
  * Validate that a path is an absolute, existing directory containing a
@@ -58,6 +58,14 @@ export async function validateProjectDir(dir: string): Promise<ProjectRootValida
 	}
 	try {
 		await access(dir);
+	} catch {
+		return { ok: false, reason: "not_found", detail: dir };
+	}
+	try {
+		const st = await stat(dir);
+		if (!st.isDirectory()) {
+			return { ok: false, reason: "not_directory", detail: dir };
+		}
 	} catch {
 		return { ok: false, reason: "not_found", detail: dir };
 	}

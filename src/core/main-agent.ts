@@ -1362,7 +1362,9 @@ export class MainAgent extends EventEmitter<MainAgentEvents> {
 								? `must be an absolute path, got: ${validation.detail}`
 								: validation.reason === "not_found"
 									? `directory does not exist: ${validation.detail}`
-									: `no project marker (.git, package.json, pyproject.toml, .cliclaw, etc.) found in ${validation.detail}`;
+									: validation.reason === "not_directory"
+										? `path exists but is not a directory: ${validation.detail}`
+										: `no project marker (.git, package.json, pyproject.toml, .cliclaw, etc.) found in ${validation.detail}`;
 						return {
 							output: `Error: invalid project_dir — ${reason}. Verify the path with exec_command first.`,
 							terminal: false,
