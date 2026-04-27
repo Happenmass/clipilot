@@ -89,6 +89,16 @@ export class ConfigView implements Component {
 				type: "text",
 			},
 			{
+				key: "thinking",
+				label: "Thinking",
+				getValue: () => {
+					const t = this.config.llm.thinking ?? "off";
+					return t === "off" ? chalk.dim("OFF") : chalk.green(t);
+				},
+				description: "Extended thinking / reasoning effort (off, minimal, low, medium, high)",
+				type: "cycle",
+			},
+			{
 				key: "agent",
 				label: "Default Agent",
 				getValue: () => this.config.defaultAgent,
@@ -246,6 +256,11 @@ export class ConfigView implements Component {
 		} else if (key === "learning") {
 			if (!this.config.learning) this.config.learning = { enabled: false };
 			this.config.learning.enabled = !this.config.learning.enabled;
+		} else if (key === "thinking") {
+			const levels = ["off", "minimal", "low", "medium", "high"] as const;
+			const current = this.config.llm.thinking ?? "off";
+			const idx = levels.indexOf(current);
+			this.config.llm.thinking = levels[(idx + 1) % levels.length];
 		}
 		this.cached = null;
 		this.box.invalidate();

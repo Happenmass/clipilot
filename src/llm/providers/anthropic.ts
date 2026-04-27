@@ -65,6 +65,7 @@ export class AnthropicProvider implements LLMProvider {
 
 		let fullText = "";
 		const contentBlocks: MessageContent[] = [];
+		let thinkingChars = 0;
 
 		for await (const event of stream) {
 			if (event.type === "content_block_start") {
@@ -77,15 +78,27 @@ export class AnthropicProvider implements LLMProvider {
 					fullText += event.delta.text;
 					yield { type: "text_delta", delta: event.delta.text };
 				} else if (event.delta.type === "thinking_delta") {
-					yield { type: "thinking_delta", delta: (event.delta as any).thinking };
+					const chunk = event.delta.thinking ?? "";
+					thinkingChars += chunk.length;
+					yield { type: "thinking_delta", delta: chunk };
 				} else if (event.delta.type === "input_json_delta") {
 					yield {
 						type: "tool_call_delta",
 						index: event.index,
-						argumentsDelta: (event.delta as any).partial_json || "",
+						argumentsDelta: event.delta.partial_json || "",
 					};
 				}
 			}
+		}
+
+		if (thinkingChars > 0) {
+			const msg = `[anthropic] thinking received: ${thinkingChars} chars`;
+			logger.info("llm", msg);
+			console.log(`[cliclaw] ${msg}`);
+		} else if (opts?.thinking && opts.thinking !== "off") {
+			const msg = `[anthropic] thinking requested but NO thinking content returned (model may not support extended thinking)`;
+			logger.info("llm", msg);
+			console.log(`[cliclaw] ${msg}`);
 		}
 
 		const finalMessage = await stream.finalMessage();
@@ -129,10 +142,17 @@ export class AnthropicProvider implements LLMProvider {
 				type: "enabled",
 				budget_tokens: budget,
 			};
-			// Extended thinking requires higher max_tokens
-			if (params.max_tokens < budget + 1024) {
+			// Extended thinking requires higher max_tokens; resolve missing value before comparing.
+			const minMaxTokens = budget + 1024;
+			const resolvedMaxTokens = typeof params.max_tokens === "number" ? params.max_tokens : 0;
+			if (resolvedMaxTokens < minMaxTokens) {
 				params.max_tokens = budget + 4096;
 			}
+			const msg = `[anthropic] thinking enabled: level=${opts.thinking} budget_tokens=${budget} max_tokens=${params.max_tokens}`;
+			logger.info("llm", msg);
+			console.log(`[cliclaw] ${msg}`);
+		} else {
+			logger.debug("llm", `[anthropic] thinking off (level=${opts?.thinking ?? "undefined"})`);
 		}
 
 		// Tools

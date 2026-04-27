@@ -318,8 +318,8 @@ describe("ConfigView", () => {
 			onSave: (cfg) => { savedConfig = cfg; },
 		});
 
-		// Navigate to Learning Sessions item (last item, index 6)
-		for (let i = 0; i < 6; i++) view.handleInput("\x1b[B");
+		// Navigate to Learning Sessions item (last item, index 7)
+		for (let i = 0; i < 7; i++) view.handleInput("\x1b[B");
 		view.handleInput("\r"); // Enter to cycle
 
 		expect(savedConfig).not.toBeNull();

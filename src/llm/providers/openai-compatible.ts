@@ -70,6 +70,7 @@ export class OpenAICompatibleProvider implements LLMProvider {
 		let usage = { inputTokens: 0, outputTokens: 0, totalTokens: 0 };
 		let stopReason = "stop";
 		let model = this.model;
+		let lastReasoningTokens: number | undefined;
 
 		try {
 			while (true) {
@@ -101,6 +102,10 @@ export class OpenAICompatibleProvider implements LLMProvider {
 							outputTokens: data.usage.completion_tokens || 0,
 							totalTokens: data.usage.total_tokens || 0,
 						};
+						const reasoningTokens = data.usage.completion_tokens_details?.reasoning_tokens;
+						if (typeof reasoningTokens === "number") {
+							lastReasoningTokens = reasoningTokens;
+						}
 					}
 
 					const choice = data.choices?.[0];
@@ -144,6 +149,16 @@ export class OpenAICompatibleProvider implements LLMProvider {
 			}
 		} finally {
 			reader.releaseLock();
+		}
+
+		if (lastReasoningTokens !== undefined && lastReasoningTokens > 0) {
+			const msg = `[${this.name}] reasoning_tokens=${lastReasoningTokens}`;
+			logger.info("llm", msg);
+			console.log(`[cliclaw] ${msg}`);
+		} else if (opts?.thinking && opts.thinking !== "off") {
+			const msg = `[${this.name}] reasoning_effort requested but reasoning_tokens=0 (model may ignore the field)`;
+			logger.info("llm", msg);
+			console.log(`[cliclaw] ${msg}`);
 		}
 
 		// Build content blocks
@@ -192,6 +207,17 @@ export class OpenAICompatibleProvider implements LLMProvider {
 
 		if (opts?.responseFormat === "json") {
 			body.response_format = { type: "json_object" };
+		}
+
+		// Reasoning effort (GPT-5 / o-series and other compatible providers).
+		// ThinkingLevel values map 1:1 onto the OpenAI `reasoning_effort` field.
+		if (opts?.thinking && opts.thinking !== "off") {
+			body.reasoning_effort = opts.thinking;
+			const msg = `[${this.name}] reasoning_effort=${opts.thinking}`;
+			logger.info("llm", msg);
+			console.log(`[cliclaw] ${msg}`);
+		} else {
+			logger.debug("llm", `[${this.name}] reasoning_effort off (level=${opts?.thinking ?? "undefined"})`);
 		}
 
 		// Convert messages
@@ -279,8 +305,10 @@ export class OpenAICompatibleProvider implements LLMProvider {
 							});
 							break;
 						case "thinking":
-							// Append thinking as text with markers
-							parts.push({ type: "text", text: `<thinking>\n${block.thinking}\n</thinking>` });
+							// OpenAI/compatible protocols treat reasoning as model-private state.
+							// Do not echo it back into the next request — the model re-reasons fresh,
+							// and replaying it risks polluting context, leaking encrypted-summary tokens,
+							// or being treated as user-supplied facts.
 							break;
 					}
 				}
@@ -379,6 +407,13 @@ export class OpenAICompatibleProvider implements LLMProvider {
 					arguments: args,
 				});
 			}
+		}
+
+		const reasoningTokens = data.usage?.completion_tokens_details?.reasoning_tokens;
+		if (reasoningTokens && reasoningTokens > 0) {
+			const msg = `[${this.name}] reasoning_tokens=${reasoningTokens}`;
+			logger.info("llm", msg);
+			console.log(`[cliclaw] ${msg}`);
 		}
 
 		return {

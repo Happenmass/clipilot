@@ -50,11 +50,31 @@ describe("mcpServers config", () => {
 		const servers: Record<string, McpServerDefinition> = {
 			"my-server": { command: "node", args: ["server.js"], type: "stdio" },
 			"sse-server": { command: "curl", type: "sse", url: "http://localhost:3001/sse" },
+			"http-server": { command: "curl", type: "http", url: "http://localhost:3002/mcp" },
 		};
 		await mkdir(configDir, { recursive: true });
 		await writeFile(configFile, JSON.stringify({ mcpServers: servers }), "utf-8");
 		const config = await loadConfig();
 		expect(config.mcpServers).toEqual(servers);
+	});
+
+	it("round-trips an http-type mcp server through save and load", async () => {
+		const servers: Record<string, McpServerDefinition> = {
+			"alibaba-obs": {
+				command: "curl",
+				type: "http",
+				url: "https://example.aliyun.com/mcp",
+				description: "Alibaba observability MCP",
+			},
+		};
+		const config = await loadConfig();
+		config.mcpServers = servers;
+		await saveConfig(config);
+
+		const reloaded = await loadConfig();
+		expect(reloaded.mcpServers).toEqual(servers);
+		expect(reloaded.mcpServers?.["alibaba-obs"].type).toBe("http");
+		expect(reloaded.mcpServers?.["alibaba-obs"].url).toBe("https://example.aliyun.com/mcp");
 	});
 
 	it("round-trips mcpServers through save and load", async () => {

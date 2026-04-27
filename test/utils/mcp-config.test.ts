@@ -61,6 +61,25 @@ describe("generateMcpConfigFile", () => {
 		expect(content.mcpServers["server-b"]).toEqual(servers["server-b"]);
 	});
 
+	it("preserves type and url for http-type servers", async () => {
+		const servers: Record<string, McpServerDefinition> = {
+			"alibaba-obs": {
+				command: "curl",
+				type: "http",
+				url: "https://example.aliyun.com/mcp",
+				description: "Alibaba observability MCP",
+			},
+		};
+		const path = await generateMcpConfigFile(servers, "cliclaw-http");
+		const content = JSON.parse(await readFile(path, "utf-8"));
+		expect(content.mcpServers["alibaba-obs"]).toEqual({
+			command: "curl",
+			type: "http",
+			url: "https://example.aliyun.com/mcp",
+		});
+		expect(content.mcpServers["alibaba-obs"].description).toBeUndefined();
+	});
+
 	it("creates file with empty servers", async () => {
 		const path = await generateMcpConfigFile({}, "cliclaw-empty");
 		const content = JSON.parse(await readFile(path, "utf-8"));
