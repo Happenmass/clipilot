@@ -65,6 +65,7 @@ export class AnthropicProvider implements LLMProvider {
 
 		let fullText = "";
 		const contentBlocks: MessageContent[] = [];
+		let thinkingChars = 0;
 
 		for await (const event of stream) {
 			if (event.type === "content_block_start") {
@@ -77,7 +78,9 @@ export class AnthropicProvider implements LLMProvider {
 					fullText += event.delta.text;
 					yield { type: "text_delta", delta: event.delta.text };
 				} else if (event.delta.type === "thinking_delta") {
-					yield { type: "thinking_delta", delta: (event.delta as any).thinking };
+					const chunk = (event.delta as any).thinking ?? "";
+					thinkingChars += chunk.length;
+					yield { type: "thinking_delta", delta: chunk };
 				} else if (event.delta.type === "input_json_delta") {
 					yield {
 						type: "tool_call_delta",
@@ -86,6 +89,16 @@ export class AnthropicProvider implements LLMProvider {
 					};
 				}
 			}
+		}
+
+		if (thinkingChars > 0) {
+			const msg = `[anthropic] thinking received: ${thinkingChars} chars`;
+			logger.info("llm", msg);
+			console.log(`[cliclaw] ${msg}`);
+		} else if (opts?.thinking && opts.thinking !== "off") {
+			const msg = `[anthropic] thinking requested but NO thinking content returned (model may not support extended thinking)`;
+			logger.info("llm", msg);
+			console.log(`[cliclaw] ${msg}`);
 		}
 
 		const finalMessage = await stream.finalMessage();
@@ -133,6 +146,11 @@ export class AnthropicProvider implements LLMProvider {
 			if (params.max_tokens < budget + 1024) {
 				params.max_tokens = budget + 4096;
 			}
+			const msg = `[anthropic] thinking enabled: level=${opts.thinking} budget_tokens=${budget} max_tokens=${params.max_tokens}`;
+			logger.info("llm", msg);
+			console.log(`[cliclaw] ${msg}`);
+		} else {
+			logger.debug("llm", `[anthropic] thinking off (level=${opts?.thinking ?? "undefined"})`);
 		}
 
 		// Tools

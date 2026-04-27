@@ -3,11 +3,15 @@ import { mkdir, readFile, unlink, writeFile } from "node:fs/promises";
 import { homedir } from "node:os";
 import { join } from "node:path";
 
+export type ThinkingLevel = "off" | "minimal" | "low" | "medium" | "high";
+
 export interface LLMConfig {
 	provider: string;
 	model: string;
 	apiKey?: string;
 	baseUrl?: string;
+	/** Extended thinking / reasoning effort. Default "off". */
+	thinking?: ThinkingLevel;
 }
 
 export interface ProviderKeyConfig {
@@ -64,8 +68,8 @@ export interface McpServerDefinition {
 	command: string;
 	args?: string[];
 	env?: Record<string, string>;
-	type: "stdio" | "sse";
-	/** URL for SSE-type servers */
+	type: "stdio" | "sse" | "http";
+	/** URL for SSE-type and HTTP-type servers */
 	url?: string;
 	/** Human-readable description shown to the Main Agent when selecting MCPs for SubAgents. Not written to the runtime mcp config file. */
 	description?: string;
@@ -125,6 +129,7 @@ const DEFAULT_CONFIG: CliclawConfig = {
 	llm: {
 		provider: "anthropic",
 		model: "claude-sonnet-4-6",
+		thinking: "off",
 	},
 	context: {
 		contextWindowLimit: 500000,

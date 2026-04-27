@@ -158,7 +158,7 @@
 	}
 
 	function updateUrlVisibility() {
-		if (fType.value === "sse") {
+		if (fType.value === "sse" || fType.value === "http") {
 			fUrlGroup.classList.remove("hidden");
 		} else {
 			fUrlGroup.classList.add("hidden");
@@ -212,7 +212,7 @@
 			if (Object.keys(env).length > 0) entry.env = env;
 		}
 
-		if (type === "sse" && fUrl.value.trim()) {
+		if ((type === "sse" || type === "http") && fUrl.value.trim()) {
 			entry.url = fUrl.value.trim();
 		}
 
