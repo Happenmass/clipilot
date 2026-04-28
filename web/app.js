@@ -43,6 +43,9 @@ let ws = null;
 let currentAssistantEl = null;
 let reconnectTimer = null;
 let agentState = "idle";
+let thinkingEl = null;
+let thinkingTimer = null;
+let thinkingStartedAt = 0;
 let queueSize = 0;
 let commands = [];
 let activeIndex = -1;
@@ -398,6 +401,34 @@ function setConnectionStatus(status) {
 		statusText.textContent = "disconnected";
 	}
 	updateQueuePill();
+	updateSendButtonMode();
+}
+
+const SEND_BTN_ICON_SEND =
+	'<svg width="14" height="14" viewBox="0 0 14 14" fill="none" aria-hidden="true">' +
+	'<path d="M7 11.5V2.5M3 6.5L7 2.5l4 4" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"/>' +
+	"</svg>";
+const SEND_BTN_ICON_STOP =
+	'<svg width="14" height="14" viewBox="0 0 14 14" fill="none" aria-hidden="true">' +
+	'<rect x="3.5" y="3.5" width="7" height="7" rx="1.2" fill="currentColor"/>' +
+	"</svg>";
+
+function updateSendButtonMode() {
+	if (!sendBtn) return;
+	const stopMode = agentState === "executing";
+	sendBtn.classList.toggle("is-stop", stopMode);
+	if (stopMode) {
+		sendBtn.innerHTML = SEND_BTN_ICON_STOP + "Stop";
+		sendBtn.title = "停止当前任务";
+	} else {
+		sendBtn.innerHTML = SEND_BTN_ICON_SEND + "Send";
+		sendBtn.title = "发送";
+	}
+}
+
+function sendStopCommand() {
+	if (!ws || ws.readyState !== WebSocket.OPEN) return;
+	ws.send(JSON.stringify({ type: "command", name: "stop" }));
 }
 
 function updateQueuePill() {
@@ -477,6 +508,7 @@ function handleServerMessage(data) {
 
 	switch (data.type) {
 		case "assistant_delta":
+			hideThinkingIndicator();
 			if (!currentAssistantEl) {
 				currentAssistantEl = addMessageBubble("assistant", "", Date.now());
 			}
@@ -489,15 +521,20 @@ function handleServerMessage(data) {
 				currentAssistantEl.innerHTML = renderMarkdown(currentAssistantEl.textContent);
 				currentAssistantEl = null;
 			}
+			if (agentState === "executing") {
+				showThinkingIndicator();
+			}
 			break;
 
 		case "agent_update":
 			addMessageBubble("agent-update", data.summary, Date.now());
+			moveThinkingIndicatorToEnd();
 			scrollToBottom();
 			break;
 
 		case "tool_activity":
 			addMessageBubble("tool-activity", data.summary, Date.now());
+			moveThinkingIndicatorToEnd();
 			scrollToBottom();
 			break;
 
@@ -508,6 +545,11 @@ function handleServerMessage(data) {
 				queueSize = data.queueSize;
 			}
 			setConnectionStatus("connected");
+			if (data.state === "executing" && !currentAssistantEl) {
+				showThinkingIndicator();
+			} else if (data.state === "idle") {
+				hideThinkingIndicator();
+			}
 			if (prevState === "executing" && data.state === "idle") {
 				notifyTaskComplete();
 			}
@@ -516,6 +558,7 @@ function handleServerMessage(data) {
 
 		case "system":
 			addMessageBubble("system", data.message, Date.now());
+			moveThinkingIndicatorToEnd();
 			scrollToBottom();
 			break;
 
@@ -524,6 +567,7 @@ function handleServerMessage(data) {
 			break;
 
 		case "clear":
+			hideThinkingIndicator();
 			messagesEl.innerHTML = "";
 			currentAssistantEl = null;
 			addMessageBubble("system", "对话已清空", Date.now());
@@ -573,6 +617,66 @@ function scrollToBottom() {
 	requestAnimationFrame(function () {
 		messagesEl.scrollTop = messagesEl.scrollHeight;
 	});
+}
+
+function showThinkingIndicator() {
+	if (!messagesEl) return;
+	if (thinkingEl) {
+		messagesEl.appendChild(thinkingEl);
+		return;
+	}
+	const row = document.createElement("div");
+	row.className = "msg-row thinking-row";
+
+	const startedAt = Date.now();
+	const time = document.createElement("div");
+	time.className = "msg-time";
+	time.textContent = formatTimestamp(startedAt);
+	row.appendChild(time);
+
+	const body = document.createElement("div");
+	body.className = "msg-body";
+
+	const ind = document.createElement("div");
+	ind.className = "thinking-indicator";
+	ind.setAttribute("role", "status");
+	ind.setAttribute("aria-live", "polite");
+	ind.innerHTML =
+		'<svg class="thinking-blob" viewBox="0 0 22 22" width="16" height="16" aria-hidden="true">' +
+		'<path d="M11 2.5c-1.5 2.4-1.5 4.5 0 8.5-3-1-5.5-1-7.5 0 2.4 1.5 4.5 1.5 8.5 0-1 3-1 5.5 0 7.5 1.5-2.4 1.5-4.5 0-8.5 3 1 5.5 1 7.5 0-2.4-1.5-4.5-1.5-8.5 0 1-3 1-5.5 0-7.5z" fill="currentColor"/>' +
+		"</svg>" +
+		'<span class="thinking-label">正在思考</span>' +
+		'<span class="thinking-timer">· 0s</span>';
+	body.appendChild(ind);
+	row.appendChild(body);
+	row.appendChild(document.createElement("div"));
+
+	messagesEl.appendChild(row);
+	thinkingEl = row;
+	thinkingStartedAt = startedAt;
+	const timerEl = ind.querySelector(".thinking-timer");
+	thinkingTimer = setInterval(function () {
+		const sec = Math.floor((Date.now() - thinkingStartedAt) / 1000);
+		timerEl.textContent = "· " + sec + "s";
+	}, 1000);
+	scrollToBottom();
+}
+
+function hideThinkingIndicator() {
+	if (thinkingTimer) {
+		clearInterval(thinkingTimer);
+		thinkingTimer = null;
+	}
+	if (thinkingEl && thinkingEl.parentNode) {
+		thinkingEl.parentNode.removeChild(thinkingEl);
+	}
+	thinkingEl = null;
+}
+
+function moveThinkingIndicatorToEnd() {
+	if (thinkingEl && messagesEl && thinkingEl.parentNode === messagesEl) {
+		messagesEl.appendChild(thinkingEl);
+	}
 }
 
 function notifyTaskComplete() {
@@ -1065,8 +1169,77 @@ function activeTabIsTakenOver() {
 	return !!(data && data.takenOver);
 }
 
+// On PC, the vertical mouse wheel does not scroll horizontally by default, and
+// without touch we also cannot pan #agent-tabs. So when tabs overflow the bar,
+// the only visible tab is the one currently in view. Enable two affordances:
+//   1. Vertical wheel → horizontal scroll (when tabs overflow).
+//   2. Click-and-drag panning for mouse users (touch already pans natively).
+// Click on a tab still selects it; drag is detected by a 4 px threshold and
+// suppresses the trailing click event so a drag-release does not switch tabs.
+function setupAgentTabsScroll() {
+	if (!agentTabsEl) return;
+
+	agentTabsEl.addEventListener(
+		"wheel",
+		function (e) {
+			if (agentTabsEl.scrollWidth <= agentTabsEl.clientWidth) return;
+			// Trackpad horizontal scroll already produces deltaX — let it through.
+			if (Math.abs(e.deltaX) > Math.abs(e.deltaY)) return;
+			if (e.deltaY === 0) return;
+			e.preventDefault();
+			agentTabsEl.scrollLeft += e.deltaY;
+		},
+		{ passive: false },
+	);
+
+	let drag = null;
+	agentTabsEl.addEventListener("pointerdown", function (e) {
+		if (e.pointerType !== "mouse") return;
+		if (e.button !== 0) return;
+		drag = {
+			pointerId: e.pointerId,
+			startX: e.clientX,
+			startScrollLeft: agentTabsEl.scrollLeft,
+			moved: false,
+		};
+	});
+	agentTabsEl.addEventListener("pointermove", function (e) {
+		if (!drag || e.pointerId !== drag.pointerId) return;
+		const dx = e.clientX - drag.startX;
+		if (!drag.moved && Math.abs(dx) > 4) {
+			drag.moved = true;
+			try {
+				agentTabsEl.setPointerCapture(drag.pointerId);
+			} catch {}
+			agentTabsEl.classList.add("dragging");
+		}
+		if (drag.moved) {
+			agentTabsEl.scrollLeft = drag.startScrollLeft - dx;
+		}
+	});
+	function endDrag(e) {
+		if (!drag || e.pointerId !== drag.pointerId) return;
+		const wasMoving = drag.moved;
+		drag = null;
+		agentTabsEl.classList.remove("dragging");
+		if (wasMoving) {
+			// Swallow the click that fires after a drag-release so the user
+			// does not accidentally switch tabs at the end of a pan.
+			const swallow = function (ev) {
+				ev.stopPropagation();
+				ev.preventDefault();
+				agentTabsEl.removeEventListener("click", swallow, true);
+			};
+			agentTabsEl.addEventListener("click", swallow, true);
+		}
+	}
+	agentTabsEl.addEventListener("pointerup", endDrag);
+	agentTabsEl.addEventListener("pointercancel", endDrag);
+}
+
 function initApp() {
 	initDomReferences();
+	setupAgentTabsScroll();
 
 	const stored = getStoredTheme();
 	applyTheme(stored === "light" || stored === "dark" ? stored : null, undefined);
@@ -1285,7 +1458,15 @@ function initApp() {
 		}
 	});
 
-	sendBtn.addEventListener("click", sendMessage);
+	sendBtn.addEventListener("click", function () {
+		if (sendBtn.classList.contains("is-stop")) {
+			sendStopCommand();
+		} else {
+			sendMessage();
+		}
+	});
+
+	updateSendButtonMode();
 
 	inputEl.addEventListener("input", function () {
 		this.style.height = "auto";
