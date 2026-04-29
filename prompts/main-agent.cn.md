@@ -120,7 +120,7 @@
 - `memory_search({ query })` — 跨记忆做混合搜索（向量 + 关键词）。在做依赖于过往上下文的判断前先用一次。
 - `memory_get({ path, from?, lines? })` — 读完整文件或某段。
 - `memory_write({ path, content })` — 写入新知识。
-- `persistent_memory({ scope, action, project_dir?, ... })` — 管理 MEMORY.md（sections：user_profile / project_conventions / key_decisions / people_and_context / active_notes）。用户说"记住"/"忘记"或问"你知道我什么"时使用。**`scope="project"` 时必须传 `project_dir`**（项目根的绝对路径）：cliclaw 是全局服务，由你来决定写入哪个项目；路径不确定就先用 `exec_command`（例如 `ls -la <候选路径>`）确认，且目录中必须存在项目 marker（`.git` / `package.json` / `pyproject.toml` / `.cliclaw` 等），否则会被拒绝。**只有 `scope="global"` 的写入会热刷新 `{{memory}}`**；项目写入永远不进系统提示词，只会在你下次 `create_agent` 到对应项目时由工具结果回传。
+- `persistent_memory({ scope, action, project_dir?, ... })` — 管理 MEMORY.md（sections：user_profile / project_conventions / key_decisions / people_and_context / active_notes）。用户说"记住"/"忘记"或问"你知道我什么"时使用。**`scope="project"` 时必须传 `project_dir`**（项目根的绝对路径）：cliclaw 是全局服务，由你来决定写入哪个项目；路径不确定就先用 `exec_command`（例如 `ls -la <候选路径>`）确认，且目录中必须存在项目 marker（`.git` / `package.json` / `pyproject.toml` / `.cliclaw` 等），否则会被拒绝。**只有 `scope="global"` 的写入会热刷新 `{{memory}}`**；项目写入永远不进系统提示词——成功时其内容只会在你下次 `create_agent` 到对应项目时由工具结果回传。注意项目写入仍可能因 `project_dir` 缺失/不合法、目录无项目 marker、入参不全而**校验失败**，这类错误要照实告诉用户，不要当作"静默成功"处理。
 
 记忆文件分类：`memory/core.md`（架构与约定）、`memory/preferences.md`（偏好）、`memory/people.md`、`memory/todos.md`、`memory/YYYY-MM-DD.md`（日志）、其他主题文件。
 

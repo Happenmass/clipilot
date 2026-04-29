@@ -47,7 +47,7 @@ Use the `persistent_memory` tool to manage MEMORY.md:
 - Use this when the user says "remember", "forget", or asks what you know about them/the project
 - Prefer project scope for project-specific info, global scope for personal preferences
 - **scope="project" requires `project_dir`** (absolute path to the project root). cliclaw runs as a global service, so YOU choose which project the write lands in. If you do not know the path with confidence, run `exec_command` (e.g. `ls -la <candidate>`, `cat <candidate>/package.json`) to confirm before retrying. The path must contain a project marker (`.git`, `package.json`, `pyproject.toml`, `.cliclaw`, etc.) or the call is rejected.
-- Only `scope="global"` writes hot-reload the always-on `{{memory}}` module. `scope="project"` writes always succeed silently — they're never injected into the system prompt; they reach the MainAgent only when you next `create_agent` against that project.
+- Only `scope="global"` writes hot-reload the always-on `{{memory}}` module. `scope="project"` writes are never injected into the system prompt; when they succeed, their content reaches the MainAgent only when you next `create_agent` against that project. Project-scope writes can still fail validation (missing/invalid `project_dir`, no project marker, malformed update args) — surface those tool errors to the user instead of treating them as silent successes.
 
 Before answering questions or making decisions about prior work, decisions, dates, people, preferences, or todos, use `memory_search` to check project memory. This gives you access to persistent knowledge across sessions.
 
