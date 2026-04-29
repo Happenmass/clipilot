@@ -1,6 +1,7 @@
 import { logger } from "../utils/logger.js";
 import { AnthropicProvider } from "./providers/anthropic.js";
 import { OpenAICompatibleProvider } from "./providers/openai-compatible.js";
+import { OpenAIResponsesProvider } from "./providers/openai-responses.js";
 import { resolveProvider } from "./providers/registry.js";
 import type {
 	CompletionOptions,
@@ -50,6 +51,9 @@ export class LLMClient {
 			case "anthropic":
 				this.provider = new AnthropicProvider(config, providerOpts);
 				break;
+			case "openai-responses":
+				this.provider = new OpenAIResponsesProvider(config, providerOpts);
+				break;
 			case "openai-compatible":
 			default:
 				this.provider = new OpenAICompatibleProvider(config, providerOpts);
@@ -94,6 +98,24 @@ export class LLMClient {
 
 	getProtocol(): string {
 		return this.provider.protocol;
+	}
+
+	/**
+	 * Reset any provider-internal state that's tied to a specific conversation.
+	 *
+	 * Currently this is the OpenAI Responses provider's Layer-2 incremental chain
+	 * (`previous_response_id` baseline). Callers MUST invoke this whenever the
+	 * `prompt_cache_key` (a.k.a. `conversation_id`) changes — most importantly after
+	 * `/clear` and `/reset`, since the next turn will use a fresh cache key and the
+	 * prior server-side response state belongs to the old session.
+	 *
+	 * No-op for providers that have no per-conversation state (chat-completions, anthropic).
+	 */
+	resetConversationState(): void {
+		const p: any = this.provider;
+		if (typeof p.resetIncrementalChain === "function") {
+			p.resetIncrementalChain();
+		}
 	}
 }
 

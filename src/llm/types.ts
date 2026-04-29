@@ -23,7 +23,32 @@ export interface ThinkingContent {
 	thinking: string;
 }
 
-export type MessageContent = TextContent | ImageContent | ToolCallContent | ThinkingContent;
+/**
+ * Reasoning trace produced by the OpenAI Responses API for reasoning-capable models.
+ *
+ * `encryptedContent` is opaque to the client and MUST be replayed verbatim in the next
+ * turn's `input` so the server can reconstruct the model's prior chain-of-thought without
+ * exposing raw reasoning tokens. This is the mechanism that lets prompt-cache prefixes
+ * survive across turns for reasoning models (see Codex `include = ["reasoning.encrypted_content"]`).
+ *
+ * `summary` and `content` are display-only / debugging mirrors of what the server emits
+ * via `response.reasoning_summary_text.delta` / `response.reasoning_text.delta`. They are
+ * NOT required for replay — only `encryptedContent` matters for cache continuity.
+ *
+ * Other protocols (Chat Completions, Anthropic) ignore this block on input; the
+ * openai-responses provider is the only one that round-trips it.
+ */
+export interface ReasoningContent {
+	type: "reasoning";
+	/** Opaque blob from the server — replay verbatim in the next turn's input. */
+	encryptedContent: string | null;
+	/** Optional human-readable summary segments (`response.reasoning_summary_text`). */
+	summary?: string[];
+	/** Optional chain-of-thought text segments (`response.reasoning_text`). */
+	content?: string[];
+}
+
+export type MessageContent = TextContent | ImageContent | ToolCallContent | ThinkingContent | ReasoningContent;
 
 export interface LLMMessage {
 	role: "system" | "user" | "assistant" | "tool";
@@ -75,12 +100,20 @@ export interface LLMResponse {
 export type LLMStreamEvent =
 	| { type: "text_delta"; delta: string }
 	| { type: "thinking_delta"; delta: string }
+	| { type: "reasoning_summary_delta"; delta: string; summaryIndex: number }
+	| { type: "reasoning_content_delta"; delta: string; contentIndex: number }
 	| { type: "tool_call_delta"; index: number; id?: string; name?: string; argumentsDelta: string }
 	| { type: "done"; response: LLMResponse };
 
 // ─── Options ─────────────────────────────────────────────
 
 export type ThinkingLevel = "off" | "minimal" | "low" | "medium" | "high";
+
+/** Display verbosity hint for the OpenAI Responses API `text.verbosity` field. */
+export type Verbosity = "low" | "medium" | "high";
+
+/** Reasoning summary granularity for OpenAI Responses (`reasoning.summary`). */
+export type ReasoningSummaryLevel = "auto" | "concise" | "detailed";
 
 export interface CompletionOptions {
 	temperature?: number;
@@ -91,11 +124,34 @@ export interface CompletionOptions {
 	toolChoice?: "auto" | "none" | "required" | { name: string };
 	responseFormat?: "text" | "json";
 	thinking?: ThinkingLevel;
+	/**
+	 * Stable cache key for the OpenAI Responses API (`prompt_cache_key`).
+	 * MUST equal the conversation_id and stay constant for the lifetime of the session
+	 * so the server hits the same cache entry across turns. Other providers ignore.
+	 */
+	promptCacheKey?: string;
+	/**
+	 * Reasoning summary level for OpenAI Responses (`reasoning.summary`).
+	 *
+	 * - `undefined` (omitted) → defaults to `"auto"` (matches Codex `ReasoningSummaryConfig::Auto`).
+	 *   Server emits `response.reasoning_summary_text.delta` events.
+	 * - `"auto" / "concise" / "detailed"` → explicit level.
+	 * - `null` → suppress summaries entirely (Codex `ReasoningSummaryConfig::None`).
+	 *   The `summary` field is omitted from the wire request.
+	 *
+	 * Other providers ignore this option.
+	 */
+	reasoningSummary?: ReasoningSummaryLevel | null;
+	/**
+	 * Display verbosity hint for OpenAI Responses (`text.verbosity`).
+	 * Other providers ignore.
+	 */
+	verbosity?: Verbosity;
 }
 
 // ─── Provider ────────────────────────────────────────────
 
-export type ProviderProtocol = "openai-compatible" | "anthropic";
+export type ProviderProtocol = "openai-compatible" | "anthropic" | "openai-responses";
 
 export interface ProviderConfig {
 	/** Unique provider identifier */
