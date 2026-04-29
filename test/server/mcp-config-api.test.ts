@@ -12,7 +12,6 @@ function createMainAgentMock() {
 	return {
 		state: "idle" as const,
 		handleMessage: async () => undefined,
-		handleResume: async () => undefined,
 		waitForIdle: async () => undefined,
 		setOnAgentChange: () => undefined,
 		getActiveAgents: () => [],
