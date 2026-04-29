@@ -371,12 +371,15 @@ export class OpenAIResponsesProvider implements LLMProvider {
 					Accept: "text/event-stream",
 					...this.headers,
 				};
-				if (this.apiKey) headers["Authorization"] = `Bearer ${this.apiKey}`;
+				if (this.apiKey) headers.Authorization = `Bearer ${this.apiKey}`;
 				if (attempt > 0) {
 					// Surface retries explicitly — every retry is a SEPARATE billable call. If the
 					// dashboard shows N entries for what was logically one /compact, attempt counter
 					// here will tell us if cliclaw retried internally.
-					logger.info("llm", `[${this.name}] fetch attempt ${attempt + 1}/${this.maxRetries + 1} — this is a RETRY of the previous failed request`);
+					logger.info(
+						"llm",
+						`[${this.name}] fetch attempt ${attempt + 1}/${this.maxRetries + 1} — this is a RETRY of the previous failed request`,
+					);
 				}
 				const response = await fetch(url, {
 					method: "POST",
@@ -454,10 +457,7 @@ export function buildRequestBody(args: {
 	// entirely (Codex `ReasoningSummaryConfig::None` path); we expose that as
 	// `reasoningSummary === null` rather than overloading `undefined`.
 	const summaryDefault: ReasoningSummaryLevel = "auto";
-	const summaryChoice =
-		opts?.reasoningSummary === undefined
-			? summaryDefault
-			: opts.reasoningSummary; // may be null to suppress
+	const summaryChoice = opts?.reasoningSummary === undefined ? summaryDefault : opts.reasoningSummary; // may be null to suppress
 	const reasoning: ReasoningWire | null =
 		opts?.thinking && opts.thinking !== "off"
 			? {
@@ -654,8 +654,7 @@ export function buildInput(messages: LLMMessage[]): ResponseItemWire[] {
 		if (msg.role === "system") continue;
 
 		if (msg.role === "tool") {
-			const output =
-				typeof msg.content === "string" ? msg.content : JSON.stringify(msg.content);
+			const output = typeof msg.content === "string" ? msg.content : JSON.stringify(msg.content);
 			out.push({
 				type: "function_call_output",
 				call_id: msg.toolCallId ?? "",
@@ -971,9 +970,7 @@ async function* parseResponsesSse(
 										.map((s: any) => s.text as string)
 								: [];
 							const content: string[] = Array.isArray(item.content)
-								? item.content
-										.filter((c: any) => typeof c?.text === "string")
-										.map((c: any) => c.text as string)
+								? item.content.filter((c: any) => typeof c?.text === "string").map((c: any) => c.text as string)
 								: [];
 							const encrypted: string | null =
 								typeof item.encrypted_content === "string" ? item.encrypted_content : null;
@@ -1067,9 +1064,7 @@ async function* parseResponsesSse(
 					case "response.incomplete": {
 						const resp = evt.response;
 						const errMsg =
-							resp?.error?.message ??
-							resp?.incomplete_details?.reason ??
-							"Responses API stream failed";
+							resp?.error?.message ?? resp?.incomplete_details?.reason ?? "Responses API stream failed";
 						throw new Error(`[${providerName}] ${evt.type}: ${errMsg}`);
 					}
 
