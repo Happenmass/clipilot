@@ -153,6 +153,313 @@ describe("ContextManager", () => {
 		});
 	});
 
+	describe("compress — in-chain (cache-friendly) path", () => {
+		const TOOLS = [
+			{
+				name: "exec_command",
+				description: "Run a shell command",
+				parameters: { type: "object" as const, properties: { cmd: { type: "string" } }, required: ["cmd"] },
+			},
+		];
+
+		it("when setCompactTuning was called, builds the request as a continuation of the main chain (same instructions, same tools, same prompt_cache_key)", async () => {
+			const llm = createMockLLMClient();
+			llm.complete.mockResolvedValue({
+				content: "<compaction_summary>\nGoal: Build API\nDone: setup\nTODO: API impl\n</compaction_summary>",
+				contentBlocks: [
+					{
+						type: "text",
+						text: "<compaction_summary>\nGoal: Build API\nDone: setup\nTODO: API impl\n</compaction_summary>",
+					},
+				],
+				usage: { inputTokens: 100, outputTokens: 30, totalTokens: 130 },
+				stopReason: "stop",
+				model: "gpt-5.4",
+			});
+			const mgr = new ContextManager({
+				llmClient: llm,
+				promptLoader: createMockPromptLoader(template),
+			});
+			mgr.setCompactTuning({ tools: TOOLS, thinking: "off" });
+			mgr.updateModule("goal", "Build API");
+			mgr.addMessage({ role: "user", content: "task #2" });
+			mgr.addMessage({ role: "assistant", content: "Starting" });
+			const conversationId = mgr.getConversationId();
+			// Capture the system prompt as it existed AT COMPACT TIME — after compress() runs,
+			// `compressed_history` is updated and `getSystemPrompt()` would return a different
+			// string. The byte-equal assertion is about what was sent on the wire.
+			const expectedSystemPromptAtCompactTime = mgr.getSystemPrompt();
+
+			await mgr.compress();
+
+			expect(llm.complete).toHaveBeenCalledOnce();
+			const [messages, opts] = llm.complete.mock.calls[0];
+
+			// Messages = [...prior conversation, single tail directive user message].
+			expect(messages).toHaveLength(3);
+			expect(messages[0]).toEqual({ role: "user", content: "task #2" });
+			expect(messages[1]).toEqual({ role: "assistant", content: "Starting" });
+			expect(messages[2].role).toBe("user");
+			expect(messages[2].content).toContain("<system_compaction_request>");
+			expect(messages[2].content).toContain("<compaction_summary>");
+
+			// CRITICAL non-input fields: must mirror what MainAgent.streamLLMResponse passes,
+			// otherwise the prompt cache + L2 incremental check both miss.
+			expect(opts.systemPrompt).toBe(expectedSystemPromptAtCompactTime);
+			expect(opts.tools).toBe(TOOLS); // SAME reference (tools list byte-equal)
+			expect(opts.toolChoice).toBe("auto");
+			expect(opts.thinking).toBe("off");
+			expect(opts.promptCacheKey).toBe(conversationId);
+		});
+
+		it("extracts the summary from <compaction_summary> tags", async () => {
+			const llm = createMockLLMClient();
+			llm.complete.mockResolvedValue({
+				content:
+					"some preamble <compaction_summary>\n  Decisions: X\n  Pending: Y\n</compaction_summary> trailing junk",
+				contentBlocks: [
+					{
+						type: "text",
+						text: "some preamble <compaction_summary>\n  Decisions: X\n  Pending: Y\n</compaction_summary> trailing junk",
+					},
+				],
+				usage: { inputTokens: 50, outputTokens: 10, totalTokens: 60 },
+				stopReason: "stop",
+				model: "gpt-5.4",
+			});
+			const mgr = new ContextManager({
+				llmClient: llm,
+				promptLoader: createMockPromptLoader(template),
+			});
+			mgr.setCompactTuning({ tools: TOOLS, thinking: "off" });
+			mgr.addMessage({ role: "user", content: "msg" });
+
+			await mgr.compress();
+
+			expect(mgr.getSystemPrompt()).toContain("Decisions: X");
+			expect(mgr.getSystemPrompt()).toContain("Pending: Y");
+			// The non-tag preamble/trailing must NOT bleed into compressed_history.
+			expect(mgr.getSystemPrompt()).not.toContain("preamble");
+			expect(mgr.getSystemPrompt()).not.toContain("trailing junk");
+		});
+
+		it("falls back to legacy separate-completion path when in-chain returns tool_calls", async () => {
+			const llm = createMockLLMClient();
+			// First call (in-chain attempt) → model produces a tool_call instead of summary text.
+			llm.complete
+				.mockResolvedValueOnce({
+					content: "",
+					contentBlocks: [
+						{ type: "tool_call", id: "call_1", name: "exec_command", arguments: { cmd: "ls" } },
+					],
+					usage: { inputTokens: 10, outputTokens: 5, totalTokens: 15 },
+					stopReason: "tool_calls",
+					model: "gpt-5.4",
+				})
+				// Second call (legacy fallback) → returns the actual summary text.
+				.mockResolvedValueOnce({
+					content: "## Completed\n- Setup\n## Pending\n- API",
+					contentBlocks: [{ type: "text", text: "## Completed\n- Setup\n## Pending\n- API" }],
+					usage: { inputTokens: 100, outputTokens: 20, totalTokens: 120 },
+					stopReason: "stop",
+					model: "gpt-5.4",
+				});
+			const mgr = new ContextManager({
+				llmClient: llm,
+				promptLoader: createMockPromptLoader(template),
+			});
+			mgr.setCompactTuning({ tools: TOOLS, thinking: "off" });
+			mgr.addMessage({ role: "user", content: "msg" });
+
+			await mgr.compress();
+
+			expect(llm.complete).toHaveBeenCalledTimes(2);
+			// Second call uses the legacy JSON-blob shape, NOT the conversation-continuation shape.
+			const [legacyMessages, legacyOpts] = llm.complete.mock.calls[1];
+			expect(legacyMessages).toHaveLength(1);
+			const blob = JSON.parse(legacyMessages[0].content);
+			expect(blob).toHaveProperty("new_conversation");
+			expect(legacyOpts.systemPrompt).toBe("You are a history compressor.");
+			// And the summary that landed in compressed_history is the legacy response.
+			expect(mgr.getSystemPrompt()).toContain("## Completed");
+		});
+
+		it("falls back to legacy when in-chain throws", async () => {
+			const llm = createMockLLMClient();
+			llm.complete
+				.mockRejectedValueOnce(new Error("server overloaded"))
+				.mockResolvedValueOnce({
+					content: "fallback summary",
+					contentBlocks: [{ type: "text", text: "fallback summary" }],
+					usage: { inputTokens: 1, outputTokens: 1, totalTokens: 2 },
+					stopReason: "stop",
+					model: "gpt-5.4",
+				});
+			const mgr = new ContextManager({
+				llmClient: llm,
+				promptLoader: createMockPromptLoader(template),
+			});
+			mgr.setCompactTuning({ tools: TOOLS, thinking: "off" });
+			mgr.addMessage({ role: "user", content: "msg" });
+
+			await mgr.compress();
+
+			expect(llm.complete).toHaveBeenCalledTimes(2);
+			expect(mgr.getSystemPrompt()).toContain("fallback summary");
+		});
+
+		it("when setCompactTuning has NOT been called, takes the legacy path immediately (no extra call)", async () => {
+			const llm = createMockLLMClient();
+			const mgr = new ContextManager({
+				llmClient: llm,
+				promptLoader: createMockPromptLoader(template),
+			});
+			// NB: no setCompactTuning() — simulates early startup before MainAgent wires it.
+			mgr.addMessage({ role: "user", content: "msg" });
+
+			await mgr.compress();
+
+			expect(llm.complete).toHaveBeenCalledOnce();
+			const [messages] = llm.complete.mock.calls[0];
+			// Legacy: single user message containing JSON blob.
+			expect(messages).toHaveLength(1);
+			expect(JSON.parse(messages[0].content)).toHaveProperty("new_conversation");
+		});
+	});
+
+	describe("conversation_id lifecycle (Responses API prompt_cache_key)", () => {
+		it("getConversationId() returns the same value across calls within one session", () => {
+			const a = contextManager.getConversationId();
+			const b = contextManager.getConversationId();
+			expect(a).toBe(b);
+			expect(a).toMatch(/^[0-9a-f-]+$/i);
+		});
+
+		it("clear() drops the conversation_id so the next call regenerates a fresh one (cache invalidation)", async () => {
+			const before = contextManager.getConversationId();
+			await contextManager.clear();
+			const after = contextManager.getConversationId();
+			expect(after).not.toBe(before);
+		});
+
+		it("compress() preserves the conversation_id (compaction = new prefix on the SAME cache entry)", async () => {
+			contextManager.addMessage({ role: "user", content: "msg" });
+			const before = contextManager.getConversationId();
+			await contextManager.compress();
+			const after = contextManager.getConversationId();
+			expect(after).toBe(before);
+		});
+
+		it("persists conversation_id to ConversationStore and restores it across restart", () => {
+			const fakeStore = {
+				saved: new Map<string, string>(),
+				saveContextState(k: string, v: string) {
+					this.saved.set(k, v);
+				},
+				loadContextState(k: string) {
+					return this.saved.get(k);
+				},
+				loadMessages: () => [],
+				clearAll() {
+					this.saved.clear();
+				},
+				saveMessage: () => {},
+			} as any;
+			const mgr = new ContextManager({
+				llmClient: createMockLLMClient(),
+				promptLoader: createMockPromptLoader(template),
+			});
+			(mgr as any).conversationStore = fakeStore;
+			const id1 = mgr.getConversationId();
+			expect(fakeStore.saved.get("conversation_id")).toBe(id1);
+
+			// Simulate restart: new ContextManager, same store
+			const mgr2 = new ContextManager({
+				llmClient: createMockLLMClient(),
+				promptLoader: createMockPromptLoader(template),
+			});
+			mgr2.restore(fakeStore);
+			expect(mgr2.getConversationId()).toBe(id1);
+		});
+	});
+
+	describe("memory reloader (cache-invalidation breakpoints)", () => {
+		it("compress() should invoke memoryReloader and update {{memory}} module from disk", async () => {
+			const reloader = vi.fn().mockResolvedValue("# MEMORY\n- entry from disk after compress");
+			const mgr = new ContextManager({
+				llmClient: createMockLLMClient(),
+				promptLoader: createMockPromptLoader(template),
+				memoryReloader: reloader,
+			});
+			mgr.updateModule("memory", "stale snapshot");
+			mgr.addMessage({ role: "user", content: "msg" });
+
+			await mgr.compress();
+
+			expect(reloader).toHaveBeenCalledOnce();
+			expect(mgr.getSystemPrompt()).toContain("entry from disk after compress");
+			expect(mgr.getSystemPrompt()).not.toContain("stale snapshot");
+		});
+
+		it("clear() should invoke memoryReloader and update {{memory}} module from disk", async () => {
+			const reloader = vi.fn().mockResolvedValue("# MEMORY\n- entry from disk after clear");
+			const mgr = new ContextManager({
+				llmClient: createMockLLMClient(),
+				promptLoader: createMockPromptLoader(template),
+				memoryReloader: reloader,
+			});
+			mgr.updateModule("memory", "stale snapshot");
+
+			await mgr.clear();
+
+			expect(reloader).toHaveBeenCalledOnce();
+			expect(mgr.getSystemPrompt()).toContain("entry from disk after clear");
+			expect(mgr.getSystemPrompt()).not.toContain("stale snapshot");
+		});
+
+		it("memoryReloader returning null should leave existing {{memory}} module untouched", async () => {
+			const reloader = vi.fn().mockResolvedValue(null);
+			const mgr = new ContextManager({
+				llmClient: createMockLLMClient(),
+				promptLoader: createMockPromptLoader(template),
+				memoryReloader: reloader,
+			});
+			mgr.updateModule("memory", "preserve me");
+
+			await mgr.clear();
+
+			expect(reloader).toHaveBeenCalledOnce();
+			expect(mgr.getSystemPrompt()).toContain("preserve me");
+		});
+
+		it("reloader throwing should not break clear()/compress()", async () => {
+			const reloader = vi.fn().mockRejectedValue(new Error("disk on fire"));
+			const mgr = new ContextManager({
+				llmClient: createMockLLMClient(),
+				promptLoader: createMockPromptLoader(template),
+				memoryReloader: reloader,
+			});
+			mgr.addMessage({ role: "user", content: "msg" });
+
+			// Should NOT throw
+			await expect(mgr.compress()).resolves.toBeUndefined();
+			await expect(mgr.clear()).resolves.toBeUndefined();
+		});
+
+		it("with no reloader configured, clear()/compress() should be a no-op for {{memory}}", async () => {
+			// Default mgr from outer beforeEach has no reloader.
+			contextManager.updateModule("memory", "preserved");
+			contextManager.addMessage({ role: "user", content: "msg" });
+
+			await contextManager.compress();
+			expect(contextManager.getSystemPrompt()).toContain("preserved");
+
+			await contextManager.clear();
+			// clear() removes goal+compressed_history but not memory; without a reloader memory stays.
+			expect(contextManager.getSystemPrompt()).toContain("preserved");
+		});
+	});
+
 	// ─── Task 7.9: New upgrade tests ─────────────────────
 
 	describe("prepareForLLM", () => {

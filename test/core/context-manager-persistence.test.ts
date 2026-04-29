@@ -79,7 +79,7 @@ describe("ContextManager Persistence", () => {
 	});
 
 	describe("restore", () => {
-		it("should restore conversation from SQLite", () => {
+		it("should restore conversation from SQLite verbatim, with NO synthetic restart notice (cache prefix stays stable)", () => {
 			// Seed data
 			store.saveMessage({ role: "user", content: "msg1" });
 			store.saveMessage({ role: "assistant", content: "msg2" });
@@ -92,11 +92,17 @@ describe("ContextManager Persistence", () => {
 			const count = cm.restore(store);
 
 			expect(count).toBe(3);
-			// restore injects a SESSION_RESTORED notice as the 4th message
-			expect(cm.getConversationLength()).toBe(4);
+			// No `[SESSION_RESTORED]` injection — restore must not mutate the input prefix
+			// across process restarts, otherwise the L1/L2 prompt-cache chain breaks on the
+			// first turn after restart.
+			expect(cm.getConversationLength()).toBe(3);
 			expect(cm.getMessages()[0].content).toBe("msg1");
+			expect(cm.getMessages()[1].content).toBe("msg2");
 			expect(cm.getMessages()[2].content).toBe("msg3");
-			expect(cm.getMessages()[3].content).toContain("[SESSION_RESTORED]");
+			for (const msg of cm.getMessages()) {
+				const text = typeof msg.content === "string" ? msg.content : JSON.stringify(msg.content);
+				expect(text).not.toContain("[SESSION_RESTORED]");
+			}
 		});
 
 		it("should restore compressed_history module", () => {
@@ -147,32 +153,30 @@ describe("ContextManager Persistence", () => {
 			const count = cm.restore(store);
 
 			expect(count).toBe(0);
-			// No SESSION_RESTORED notice when there are no messages
 			expect(cm.getConversationLength()).toBe(0);
 		});
 
-		it("should not stack restore notices when last message already is one", () => {
-			// First restart: seed real conversation, then restore
+		it("repeated restarts with no new activity produce no conversation growth", () => {
+			// First restart: seed real conversation, then restore.
 			store.saveMessage({ role: "user", content: "msg1" });
 			store.saveMessage({ role: "assistant", content: "msg2" });
 
 			const cm1 = new ContextManager({ llmClient: mockLLM, promptLoader: mockPromptLoader });
 			cm1.restore(store);
-			expect(cm1.getConversationLength()).toBe(3);
-			expect(cm1.getMessages()[2].content).toContain("[SESSION_RESTORED]");
+			expect(cm1.getConversationLength()).toBe(2);
 
-			// Second restart with no new activity: previous restore notice is now
-			// the tail of the persisted conversation. Restoring again must not
-			// append another notice.
+			// Second restart with no new activity — must restore exactly the same shape.
 			const cm2 = new ContextManager({ llmClient: mockLLM, promptLoader: mockPromptLoader });
 			cm2.restore(store);
-			expect(cm2.getConversationLength()).toBe(3);
-			expect(cm2.getMessages()[2].content).toContain("[SESSION_RESTORED]");
+			expect(cm2.getConversationLength()).toBe(2);
+			expect(cm2.getMessages()[0].content).toBe("msg1");
+			expect(cm2.getMessages()[1].content).toBe("msg2");
 
-			// Third restart — still no growth.
+			// Third restart — still 2 messages, byte-identical input prefix.
 			const cm3 = new ContextManager({ llmClient: mockLLM, promptLoader: mockPromptLoader });
 			cm3.restore(store);
-			expect(cm3.getConversationLength()).toBe(3);
+			expect(cm3.getConversationLength()).toBe(2);
+			expect(JSON.stringify(cm3.getMessages())).toBe(JSON.stringify(cm1.getMessages()));
 		});
 	});
 
