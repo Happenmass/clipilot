@@ -16,12 +16,7 @@ import type {
 	ToolDefinition,
 } from "../llm/types.js";
 import { buildCategoryPathFilter } from "../memory/category.js";
-import {
-	loadPersistentMemory,
-	readPersistentMemory,
-	updatePersistentMemory,
-	validateProjectDir,
-} from "../memory/persistent.js";
+import { readPersistentMemory, updatePersistentMemory, validateProjectDir } from "../memory/persistent.js";
 import { searchMemory } from "../memory/search.js";
 import { isMemoryPath, type MemoryStore } from "../memory/store.js";
 import type { EmbeddingProvider, HybridSearchConfig, MemoryCategory } from "../memory/types.js";
@@ -294,7 +289,7 @@ const TOOL_DEFINITIONS: ToolDefinition[] = [
 	{
 		name: "persistent_memory",
 		description:
-			"Read or update a persistent MEMORY.md file. Global scope (`~/.cliclaw/MEMORY.md`) is the one that's always loaded into your system prompt under {{memory}}. Project scope (`<project_dir>/.cliclaw/MEMORY.md`) is NEVER in your system prompt — it's surfaced to you only when you `create_agent` against that project, so you can decide what to forward to the sub-agent. Use this when the user asks you to remember/forget something, or when you need to review current memories. When scope is 'project', you MUST pass project_dir (absolute path to the project root) — cliclaw runs as a global service, so the agent owns the choice of which project receives the write.",
+			"Read or update a persistent MEMORY.md file. Global scope (`~/.cliclaw/MEMORY.md`) is loaded into your system prompt under {{memory}} ONCE per session and is intentionally NOT hot-reloaded after writes — this keeps the system prompt byte-stable for prompt-cache hits. The {{memory}} snapshot is refreshed only at /clear, /compact, or /reset. So a successful `update` writes to disk immediately (authoritative), but your in-prompt view stays as it was at session start; rely on this tool's return value (and on `read` calls) to confirm effects, not on the system prompt changing. Project scope (`<project_dir>/.cliclaw/MEMORY.md`) is NEVER in your system prompt — it's surfaced to you only when you `create_agent` against that project, so you can decide what to forward to the sub-agent. Use this when the user asks you to remember/forget something, or when you need to review current memories. When scope is 'project', you MUST pass project_dir (absolute path to the project root) — cliclaw runs as a global service, so the agent owns the choice of which project receives the write.",
 		parameters: {
 			type: "object",
 			properties: {
@@ -465,6 +460,15 @@ export class MainAgent extends EventEmitter<MainAgentEvents> {
 		}
 		logger.info("main-agent", `Thinking level: ${this.thinking}`);
 		console.log(`[cliclaw] Thinking level: ${this.thinking}`);
+
+		// Hand the effective LLM tuning to ContextManager so `compress()` can ride the same
+		// chain (and thus the same prompt-cache prefix + L2 incremental window) as the main
+		// session's regular turns. Skipping this just means compaction falls back to the legacy
+		// separate-completion path — non-fatal but every compact then costs full input tokens.
+		this.contextManager.setCompactTuning({
+			tools: TOOL_DEFINITIONS,
+			thinking: this.thinking,
+		});
 	}
 
 	/** Replace the skill registry at runtime (used by /reset). */
@@ -711,11 +715,18 @@ export class MainAgent extends EventEmitter<MainAgentEvents> {
 		let textContent = "";
 		const toolCallAccumulator = new Map<number, { id: string; name: string; args: string }>();
 
+		// Pass conversation_id as `prompt_cache_key` for the Responses API path. Other
+		// providers (chat-completions, anthropic) ignore this field, so it's safe to send
+		// unconditionally. Stable across the session except at /clear & /reset, mirroring
+		// Codex `state.conversation_id`.
+		const promptCacheKey = this.contextManager.getConversationId();
+
 		const stream = this.llmClient.stream(messages, {
 			systemPrompt: system,
 			tools: TOOL_DEFINITIONS,
 			temperature: 0.2,
 			thinking: this.thinking,
+			promptCacheKey,
 		});
 
 		let finalResponse: any = null;
@@ -858,39 +869,6 @@ export class MainAgent extends EventEmitter<MainAgentEvents> {
 			this.broadcaster.broadcast({ type: "assistant_done" });
 
 			toolCalls = nextToolCalls;
-		}
-	}
-
-	// ─── Resume (after /stop) ──────────────────────────
-
-	async handleResume(): Promise<void> {
-		if (this.state === "executing") return;
-
-		try {
-			this.contextManager.addMessage({
-				role: "user",
-				content: "[RESUME] 继续执行之前的任务",
-			});
-
-			this.setState("executing");
-
-			const { toolCalls, textContent } = await this.streamLLMResponse();
-
-			if (toolCalls.length > 0) {
-				const assistantBlocks = this.buildAssistantBlocks(textContent, toolCalls);
-				this.contextManager.addMessage({ role: "assistant", content: assistantBlocks });
-				this.broadcaster.broadcast({ type: "assistant_done" });
-				await this.executeToolLoop(toolCalls);
-			} else {
-				if (textContent) {
-					this.contextManager.addMessage({ role: "assistant", content: textContent });
-				}
-				this.broadcaster.broadcast({ type: "assistant_done" });
-				this.setState("idle");
-			}
-		} catch (err: any) {
-			this.recoverFromExecutionError("handleResume", err);
-			throw err;
 		}
 	}
 
@@ -1398,14 +1376,17 @@ export class MainAgent extends EventEmitter<MainAgentEvents> {
 
 					await updatePersistentMemory({ filePath, section, operation, content });
 
-					// Only global writes refresh the always-on {{memory}} module.
-					// Project writes are intentionally never injected into the system prompt —
-					// they're surfaced on demand by create_agent against the matching project.
+					// IMPORTANT: do NOT hot-reload {{memory}} into the system prompt here.
+					// Rewriting the prompt prefix mid-session invalidates the model's prompt
+					// cache and burns tokens. The on-disk MEMORY.md is the source of truth;
+					// the in-prompt {{memory}} snapshot is taken once at session start and
+					// only refreshed at explicit cache-invalidation breakpoints (/clear,
+					// /compact, /reset). Until then, the agent learns the effect of the
+					// write from this tool's return value, not from a prompt change.
 					let suffix: string;
 					if (scope === "global") {
-						const globalMemory = await loadPersistentMemory(this.globalDir);
-						this.contextManager.updateModule("memory", globalMemory);
-						suffix = "Global system prompt refreshed.";
+						suffix =
+							"Wrote to ~/.cliclaw/MEMORY.md. The system prompt's {{memory}} snapshot is intentionally NOT refreshed this turn (prompt-cache stability); on-disk content is now authoritative and the snapshot will be reloaded on the next /clear, /compact, or /reset.";
 					} else {
 						suffix = `Wrote to ${resolvedProjectDir}/.cliclaw/MEMORY.md; current session memory not modified (project memory is loaded by create_agent, not the system prompt).`;
 					}

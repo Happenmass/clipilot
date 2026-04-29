@@ -695,12 +695,26 @@ async function main(): Promise<void> {
 		logger.info("main", "Learning Sessions disabled (enable via `cliclaw config`)");
 	}
 
+	// Global persistent memory dir (~/.cliclaw) — captured once and reused by the reloader
+	// so that /clear, /compact, and /reset can refresh {{memory}} from disk without rebuilding
+	// the path each time.
+	const globalDir = getConfigDir();
+	const reloadGlobalMemory = async (): Promise<string | null> => {
+		try {
+			return await loadPersistentMemory(globalDir);
+		} catch (err: any) {
+			logger.warn("main", `Persistent memory reload failed (non-fatal): ${err.message}`);
+			return null;
+		}
+	};
+
 	// Initialize ContextManager with conversation persistence
 	const contextManager = new ContextManager({
 		llmClient,
 		promptLoader,
 		memoryStore,
 		syncMemory,
+		memoryReloader: reloadGlobalMemory,
 		contextWindowLimit: args.contextWindow || config.context.contextWindowLimit,
 		compressionThreshold: config.context.compressionThreshold,
 		flushThreshold: config.memory.flushThreshold,
@@ -735,11 +749,14 @@ async function main(): Promise<void> {
 	// Inject configured MCP servers list so MainAgent knows what's available
 	contextManager.updateModule("available_mcp_servers", buildMcpServersSummary(config.mcpServers));
 
-	// Load global persistent memory (~/.cliclaw/MEMORY.md) into {{memory}} module.
+	// Load global persistent memory (~/.cliclaw/MEMORY.md) into the {{memory}} module ONCE
+	// at session start. The module is intentionally NOT hot-reloaded after `persistent_memory`
+	// tool writes — keeping the system prompt byte-stable preserves prompt-cache hits across
+	// turns. The module is refreshed only at explicit cache-invalidation breakpoints:
+	// /clear, /compact, and /reset (see ContextManager.reloadPersistentMemory).
 	// Project-level memory is fetched on demand by create_agent — see main-agent.ts.
-	const globalDir = getConfigDir();
 	try {
-		const persistentMemory = await loadPersistentMemory(globalDir);
+		const persistentMemory = await reloadGlobalMemory();
 		if (persistentMemory) {
 			contextManager.updateModule("memory", persistentMemory);
 			logger.info("main", "Global persistent memory loaded into context");
@@ -929,7 +946,21 @@ async function main(): Promise<void> {
 			}
 		}
 
-		// 6. Re-sync memory index
+		// 6. Refresh {{memory}} module from MEMORY.md — /reset is an explicit
+		//    cache-invalidation breakpoint, so it's the right time to pick up any
+		//    persistent_memory writes that landed during the prior session.
+		//    (ContextManager.clear() also calls reloadPersistentMemory, so this is
+		//    belt-and-suspenders; keeping it here makes the reset path self-contained.)
+		try {
+			const refreshed = await reloadGlobalMemory();
+			if (refreshed !== null) {
+				contextManager.updateModule("memory", refreshed);
+			}
+		} catch (err: any) {
+			logger.warn("main", `Persistent memory refresh on reset failed (non-fatal): ${err.message}`);
+		}
+
+		// 7. Re-sync memory index
 		try {
 			const syncResult = await syncMemoryFiles(memoryStore, {
 				chunking: {

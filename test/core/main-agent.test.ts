@@ -21,6 +21,15 @@ function createMockContextManager() {
 		shouldRunMemoryFlush: vi.fn().mockReturnValue(false),
 		runMemoryFlush: vi.fn(),
 		getCurrentTokenEstimate: vi.fn().mockReturnValue(0),
+		// Stable conversation_id for the OpenAI Responses prompt_cache_key path. The mock
+		// returns a fixed value so byte-equality assertions in caller-level tests remain
+		// deterministic; provider-level tests are in test/llm/openai-responses.test.ts.
+		getConversationId: vi.fn().mockReturnValue("test-conversation-id"),
+		// Stub for the compact-tuning hand-off. MainAgent calls this at construction time so
+		// `compress()` can run on-chain with cache reuse. Tests don't exercise compression
+		// here — provider-level cache behavior is tested in test/llm/openai-responses.test.ts
+		// and the in-chain shape is tested in test/core/context-manager.test.ts.
+		setCompactTuning: vi.fn(),
 	} as any;
 }
 
@@ -550,16 +559,6 @@ describe("MainAgent State Machine", () => {
 			});
 		});
 
-		it("should recover to idle when handleResume fails", async () => {
-			const agent = setupAgent([toolCallResponse("inspect_agent", { lines: 100 }, "tc1")]);
-			agent.setPaneTarget("test:0.0");
-
-			mockCtx.shouldRunMemoryFlush.mockReturnValue(true);
-			mockCtx.runMemoryFlush.mockRejectedValue(new Error("flush failed"));
-
-			await expect(agent.handleResume()).rejects.toThrow("flush failed");
-			expect(agent.state).toBe("idle");
-		});
 	});
 
 	describe("kill_agent tool", () => {
@@ -662,8 +661,8 @@ describe("MainAgent State Machine", () => {
 			}
 		});
 
-		it("should hot-reload {{memory}} only on global writes", async () => {
-			const { mkdtemp, rm, mkdir } = await import("node:fs/promises");
+		it("should NOT hot-reload {{memory}} on global writes — write lands on disk, but the system prompt snapshot stays byte-stable for prompt-cache hits (refresh deferred to /clear, /compact, /reset)", async () => {
+			const { mkdtemp, rm, mkdir, readFile } = await import("node:fs/promises");
 			const { tmpdir } = await import("node:os");
 			const { join } = await import("node:path");
 			const tempDir = await mkdtemp(join(tmpdir(), "pm-test-"));
@@ -690,7 +689,24 @@ describe("MainAgent State Machine", () => {
 
 				await agent.handleMessage("remember this");
 
-				expect(mockCtx.updateModule).toHaveBeenCalledWith("memory", expect.stringContaining("Remember this"));
+				// Disk write must have happened — that's the source of truth.
+				const onDisk = await readFile(join(globalDir, "MEMORY.md"), "utf8");
+				expect(onDisk).toContain("Remember this");
+
+				// But the {{memory}} module in the system prompt must NOT have been hot-reloaded.
+				// (No call to updateModule with key "memory" anywhere in this turn.)
+				const memoryModuleCalls = mockCtx.updateModule.mock.calls.filter((c: any) => c[0] === "memory");
+				expect(memoryModuleCalls).toHaveLength(0);
+
+				// The agent should have been told via the tool result that the snapshot is stale-by-design.
+				const addMessageCalls = mockCtx.addMessage.mock.calls;
+				const toolResultCall = addMessageCalls.find(
+					(c: any) =>
+						c[0].role === "tool" &&
+						typeof c[0].content === "string" &&
+						c[0].content.includes("snapshot is intentionally NOT refreshed"),
+				);
+				expect(toolResultCall).toBeTruthy();
 			} finally {
 				await rm(tempDir, { recursive: true, force: true });
 			}

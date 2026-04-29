@@ -33,6 +33,8 @@ function createMockContextManager() {
 		shouldRunMemoryFlush: vi.fn().mockReturnValue(false),
 		runMemoryFlush: vi.fn(),
 		getCurrentTokenEstimate: vi.fn().mockReturnValue(0),
+		getConversationId: vi.fn().mockReturnValue("test-conversation-id"),
+		setCompactTuning: vi.fn(),
 	} as any;
 }
 

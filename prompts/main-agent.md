@@ -47,7 +47,7 @@ Use the `persistent_memory` tool to manage MEMORY.md:
 - Use this when the user says "remember", "forget", or asks what you know about them/the project
 - Prefer project scope for project-specific info, global scope for personal preferences
 - **scope="project" requires `project_dir`** (absolute path to the project root). cliclaw runs as a global service, so YOU choose which project the write lands in. If you do not know the path with confidence, run `exec_command` (e.g. `ls -la <candidate>`, `cat <candidate>/package.json`) to confirm before retrying. The path must contain a project marker (`.git`, `package.json`, `pyproject.toml`, `.cliclaw`, etc.) or the call is rejected.
-- Only `scope="global"` writes hot-reload the always-on `{{memory}}` module. `scope="project"` writes are never injected into the system prompt; when they succeed, their content reaches the MainAgent only when you next `create_agent` against that project. Project-scope writes can still fail validation (missing/invalid `project_dir`, no project marker, malformed update args) — surface those tool errors to the user instead of treating them as silent successes.
+- The always-on `{{memory}}` module is a snapshot of `~/.cliclaw/MEMORY.md` taken ONCE per session. `persistent_memory` writes (both global and project) update the file on disk immediately and authoritatively, but the `{{memory}}` snapshot in your system prompt stays as it was at session start — this is intentional: keeping the prompt prefix byte-stable is what lets the prompt cache hit across turns. The snapshot is refreshed only at explicit cache-invalidation breakpoints: `/clear`, `/compact`, and `/reset`. So after a successful write, do not re-read the system prompt to confirm; the tool's return value tells you what happened, and `persistent_memory(action="read")` always reads from disk if you need to verify. `scope="project"` writes are never injected into the system prompt at all; their content reaches the MainAgent only when you next `create_agent` against that project. Project-scope writes can still fail validation (missing/invalid `project_dir`, no project marker, malformed update args) — surface those tool errors to the user instead of treating them as silent successes.
 
 Before answering questions or making decisions about prior work, decisions, dates, people, preferences, or todos, use `memory_search` to check project memory. This gives you access to persistent knowledge across sessions.
 
@@ -219,10 +219,6 @@ When you genuinely finish:
 - If the situation matches an escalation boundary (see "When to Escalate" below), call `escalate_to_human`.
 
 After returning to idle, the user can continue chatting or assign new tasks.
-
-#### Resume After Stop
-
-If the user stops your execution with `/stop` and later resumes with `/resume`, you will see a `[RESUME]` message. Review the conversation history and continue where you left off.
 
 ### OpenSpec Orchestration
 
