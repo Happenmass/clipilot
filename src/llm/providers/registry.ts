@@ -2,7 +2,7 @@ import type { ProviderConfig } from "../types.js";
 
 /** Built-in provider configurations */
 export const BUILTIN_PROVIDERS: ProviderConfig[] = [
-	// ─── OpenAI ──────────────────────────────────────────
+	// ─── OpenAI (Chat Completions — implicit prefix cache only) ────────
 	{
 		name: "openai",
 		displayName: "OpenAI",
@@ -11,6 +11,21 @@ export const BUILTIN_PROVIDERS: ProviderConfig[] = [
 		apiKeyEnvVar: "OPENAI_API_KEY",
 		defaultModel: "gpt-5.4",
 		models: ["gpt-5.4", "gpt-5.2", "gpt-4.1", "gpt-4.1-mini", "o3", "o3-pro", "o4-mini"],
+	},
+
+	// ─── OpenAI Responses API (explicit prompt_cache_key + encrypted reasoning replay) ─
+	// Mirrors the Codex CLI calling pattern. Use this provider for reasoning-model sessions
+	// where cache hit rate matters: it sets `prompt_cache_key = conversation_id`, keeps
+	// `instructions` + `tools` byte-equal across turns, and round-trips reasoning items via
+	// `include = ["reasoning.encrypted_content"]` so the prefix survives across turns.
+	{
+		name: "openai-responses",
+		displayName: "OpenAI (Responses API)",
+		protocol: "openai-responses",
+		baseUrl: "https://api.openai.com/v1",
+		apiKeyEnvVar: "OPENAI_API_KEY",
+		defaultModel: "gpt-5.4",
+		models: ["gpt-5.4", "gpt-5.2", "o3", "o3-pro", "o4-mini"],
 	},
 
 	// ─── Anthropic ───────────────────────────────────────

@@ -1,3 +1,4 @@
+import { randomBytes } from "node:crypto";
 import { readFile } from "node:fs/promises";
 import { join } from "node:path";
 import type { ContextManager } from "../core/context-manager.js";
@@ -14,7 +15,6 @@ import type { UiEventStore } from "./ui-events.js";
 /** Built-in command descriptors registered at construction time */
 const BUILTIN_COMMANDS: CommandDescriptor[] = [
 	{ name: "stop", description: "停止当前执行任务", category: "builtin" },
-	{ name: "resume", description: "恢复上次中断的执行", category: "builtin" },
 	{ name: "clear", description: "清空对话历史", category: "builtin" },
 	{ name: "reset", description: "重置对话并重新加载提示词和技能", category: "builtin" },
 	{ name: "compact", description: "压缩对话历史并注入系统提示词", category: "builtin" },
@@ -37,8 +37,9 @@ interface TidyResult {
 }
 
 /**
- * Routes slash commands (/stop, /resume, /clear, /tidy) to the appropriate handlers.
- * Commands are dispatched from the WebSocket handler, not through the LLM.
+ * Routes slash commands (/stop, /clear, /reset, /compact, /context, /tidy) to the
+ * appropriate handlers. Commands are dispatched from the WebSocket handler, not
+ * through the LLM.
  */
 export class CommandRouter {
 	private mainAgent: MainAgent;
@@ -86,8 +87,6 @@ export class CommandRouter {
 		switch (name) {
 			case "stop":
 				return this.handleStop();
-			case "resume":
-				return this.handleResume();
 			case "clear":
 				return this.handleClear();
 			case "reset":
@@ -118,17 +117,6 @@ export class CommandRouter {
 		// The MainAgent's executeToolLoop will check isStopRequested between rounds
 	}
 
-	private async handleResume(): Promise<void> {
-		if (this.mainAgent.state === "executing") {
-			this.broadcaster.broadcast({
-				type: "system",
-				message: "当前已在执行中",
-			});
-			return;
-		}
-		await this.mainAgent.handleResume();
-	}
-
 	private async handleClear(): Promise<void> {
 		// Stop first if executing
 		if (this.mainAgent.state === "executing") {
@@ -153,13 +141,23 @@ export class CommandRouter {
 	}
 
 	private async handleCompact(): Promise<void> {
+		const compactRunId = randomBytes(4).toString("hex");
+		const t0 = Date.now();
+		logger.info(
+			"command-router",
+			`[compact ${compactRunId}] /compact entered (mainAgent.state=${this.mainAgent.state}, conv.length=${this.contextManager.getConversationLength()})`,
+		);
+
 		// Stop first if executing
 		if (this.mainAgent.state === "executing") {
+			logger.info("command-router", `[compact ${compactRunId}] state=executing → requesting stop and waiting for idle`);
 			this.signalRouter.stop();
 			await this.mainAgent.waitForIdle();
+			logger.info("command-router", `[compact ${compactRunId}] reached idle (waited ${Date.now() - t0}ms)`);
 		}
 
 		if (this.contextManager.getConversationLength() === 0) {
+			logger.info("command-router", `[compact ${compactRunId}] empty conversation → no-op`);
 			this.broadcaster.broadcast({
 				type: "system",
 				message: "当前没有对话内容，无需压缩",
@@ -172,14 +170,19 @@ export class CommandRouter {
 			message: "正在压缩对话历史...",
 		});
 
-		await this.contextManager.compress();
+		const tCompress = Date.now();
+		await this.contextManager.compress(compactRunId);
+		logger.info(
+			"command-router",
+			`[compact ${compactRunId}] compress() returned in ${Date.now() - tCompress}ms (total /compact ${Date.now() - t0}ms)`,
+		);
 
 		this.broadcaster.broadcast({
 			type: "system",
 			message: "对话历史已压缩并注入系统提示词",
 		});
 
-		logger.info("command-router", "Conversation compacted via /compact command");
+		logger.info("command-router", `[compact ${compactRunId}] /compact done`);
 	}
 
 	private async handleReset(): Promise<void> {

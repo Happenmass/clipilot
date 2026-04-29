@@ -70,7 +70,6 @@ describe("learning REST API", () => {
 		const mainAgent = {
 			state: "idle" as const,
 			handleMessage: async () => undefined,
-			handleResume: async () => undefined,
 			waitForIdle: async () => undefined,
 			setOnAgentChange: () => undefined,
 			getActiveAgents: () => [],

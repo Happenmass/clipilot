@@ -6,7 +6,6 @@ function createMockMainAgent(state: "idle" | "executing" = "idle") {
 	return {
 		state,
 		handleMessage: vi.fn().mockResolvedValue(undefined),
-		handleResume: vi.fn().mockResolvedValue(undefined),
 		waitForIdle: vi.fn().mockResolvedValue(undefined),
 	} as any;
 }
@@ -72,23 +71,6 @@ describe("CommandRouter", () => {
 			expect(mockRouter.stop).not.toHaveBeenCalled();
 			expect(mockBroadcaster.broadcast).toHaveBeenCalledWith(
 				expect.objectContaining({ type: "system", message: "当前未在执行任务" }),
-			);
-		});
-	});
-
-	describe("/resume", () => {
-		it("should call mainAgent.handleResume() when idle", async () => {
-			setup("idle");
-			await commandRouter.handle("resume");
-			expect(mockAgent.handleResume).toHaveBeenCalled();
-		});
-
-		it("should broadcast message when already executing", async () => {
-			setup("executing");
-			await commandRouter.handle("resume");
-			expect(mockAgent.handleResume).not.toHaveBeenCalled();
-			expect(mockBroadcaster.broadcast).toHaveBeenCalledWith(
-				expect.objectContaining({ type: "system", message: "当前已在执行中" }),
 			);
 		});
 	});
@@ -269,13 +251,17 @@ describe("CommandRouter", () => {
 		it("should register all built-in commands into CommandRegistry", () => {
 			setup();
 			expect(commandRegistry.has("stop")).toBe(true);
-			expect(commandRegistry.has("resume")).toBe(true);
 			expect(commandRegistry.has("clear")).toBe(true);
 			expect(commandRegistry.has("reset")).toBe(true);
 			expect(commandRegistry.has("compact")).toBe(true);
 			expect(commandRegistry.has("context")).toBe(true);
 			expect(commandRegistry.has("tidy")).toBe(true);
-			expect(commandRegistry.size).toBe(7);
+			// /resume was removed: it had no remaining purpose once /stop's flag is checked
+			// between tool-loop rounds and execution naturally returns to idle on text-only
+			// turns. The /resume command also injected a synthetic [RESUME] user message,
+			// which was bad for prompt-cache prefix stability.
+			expect(commandRegistry.has("resume")).toBe(false);
+			expect(commandRegistry.size).toBe(6);
 		});
 	});
 
